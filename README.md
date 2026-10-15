@@ -1,124 +1,155 @@
-# DDEV Backup
+# Omarchy DDEV Backup
 
-Plugin per la barra di Omarchy che fa backup e restore completi dei progetti
-DDEV: **sorgenti, configurazione (`.env`, `.ddev/`) e tutti i database** in un
-singolo file `.zip`.
+🇬🇧 English · 🇮🇹 [Italiano](README.it.md)
 
-## Installazione
+A bar plugin for Omarchy 4.x that makes full backups and restores of [DDEV](https://ddev.com) projects: **source code, configuration (`.env`, `.ddev/`) and every database** in a single `.zip` file, in one click.
 
-```sh
-omarchy plugin add https://github.com/zeroviger/omarchy-ddev-backup --enable
+![DDEV Backup](preview.png)
+
+> The plugin's interface is in Italian.
+
+## Features
+
+- **Full backup** of a project to a `.zip` file: the whole project folder plus a dump of every database in the container (not just `db`). A stopped project is started to export its databases and stopped again afterwards.
+- **Database-only backup** with an optional note (for example "before the migration"): fast, meant for right before a risky operation.
+- **In-place restore**, exact: files and databases go back to how they were at backup time, and anything created later is removed. A **safety backup** of the current state is always taken before overwriting; if the restore fails, the original folder is put back.
+- **Preview before restoring**: date, type, note, databases, git branch and commit (and whether there were uncommitted changes), original folder, machine and DDEV version, size.
+- **Restore as a copy**: creates a new DDEV project from a backup, with a name and folder of your choice, without touching the original.
+- **Restore from file**: any `.zip` picked with the file chooser, for example copied from another computer. Projects that were deleted from DDEV can also be restored from the list.
+- Per project, also **start/stop** (`ddev start` / `ddev stop`) and a **terminal** opened in the project folder.
+- **Automatic retention**: keeps the last N full backups and the last M database-only backups per project.
+- **Safe operations**: one operation at a time per project, a free disk space check before starting, sha256 verification of the dumps before every restore.
+- Supported databases: **MariaDB, MySQL and PostgreSQL**.
+- Everything can also be done from a terminal with the `bin/ddev-backup` script, which the panel itself uses.
+
+## Requirements
+
+- Omarchy 4.x with Omarchy Shell (Quickshell).
+- [DDEV](https://ddev.com/get-started/) with Docker running.
+- `bash`, `jq`, `bsdtar` (libarchive), `unzip` and `notify-send` (libnotify), which ship with Omarchy.
+
+## Installation
+
+```bash
+omarchy plugin add https://github.com/zeroviger/omarchy-ddev-backup.git --enable
 ```
 
-Aggiornamenti: `omarchy plugin update mcp64.ddev-backup`.
+The widget is placed in the right section of the bar. To move it:
 
-Richiede `ddev`, `jq` e `bsdtar` (presente di default su Arch/Omarchy).
-Database supportati: MariaDB, MySQL e PostgreSQL (tutti i database del
-container, non solo `db`).
+```bash
+omarchy bar move mcp64.ddev-backup --section left   # or center
+```
 
-## Uso dal pannello
+## Usage
 
-Clicca l'icona  nella barra:
+Click the archive icon in the bar. For each DDEV project:
 
-- **›** mostra i backup del progetto.
-- **>_** apre un terminale nella cartella del progetto.
-- **▶ / ■** avvia o ferma il progetto (`ddev start` / `ddev stop`).
-- **💾 Backup** su un progetto crea subito il backup completo. Se il progetto
-  è fermo viene avviato per esportare il database e poi rifermato.
-- **🛢 Backup DB** salva solo i database, con una nota facoltativa (es. "prima
-  della migrazione"): veloce, utile prima di operazioni rischiose. Il restore
-  riporta indietro i database senza toccare i file.
-- **▸** mostra i backup esistenti; per ognuno ci sono **Ripristina** ed
-  **Elimina**, entrambi con richiesta di conferma. Prima di ripristinare
-  compare un'anteprima del backup: data, tipo, nota, database, branch e
-  commit git (e se c'erano modifiche non committate), cartella originale,
-  macchina e versione di DDEV, dimensione.
-- **⧉ Ripristina come copia** (solo backup completi) crea un nuovo progetto
-  DDEV dal backup, con nome e cartella a scelta: utile per provare qualcosa
-  senza toccare l'originale.
-- **Ripristina da file…** (in alto) apre un file chooser per un `.zip`
-  ovunque si trovi (es. copiato da un altro PC).
-- **⚙ Impostazioni** (in alto): cartella dei backup, quanti backup tenere,
-  esclusioni, notifiche.
-- I backup di progetti non più registrati in DDEV compaiono in fondo e si
-  possono ripristinare nella loro cartella originale.
+| Button | Action |
+|---|---|
+| ›  | Show the project's backups |
+| >_ | Open a terminal in the project folder |
+| ▶ / ■ | Start or stop the project |
+| 🛢 | Database-only backup, with an optional note |
+| 💾 | Full backup |
 
-## Uso da terminale
+For each backup in the list:
 
-```sh
+| Button | Action |
+|---|---|
+| ⧉ | Restore as a copy (full backups only): name and folder of the new project |
+| ↺ | Restore, after the preview and a confirmation |
+| 🗑 | Delete, after a confirmation |
+
+In the panel header: open the backup folder, restore from a `.zip` file, settings, refresh.
+
+Esc first closes the open confirmation or form, then the panel. The panel can also be opened from a terminal or bound to a shortcut:
+
+```bash
+qs -p /usr/share/omarchy/shell ipc call mcp64.ddev-backup toggle
+```
+
+### From a terminal
+
+```bash
 B=~/.config/omarchy/plugins/mcp64.ddev-backup/bin/ddev-backup
-$B backup mioprogetto
-$B backup mioprogetto --db-only --label "prima della migrazione"
-$B inspect ~/Backups/ddev/mioprogetto/mioprogetto-20261015-102100.zip
-$B restore <file.zip> --force                       # sovrascrive il progetto
-$B restore <file.zip> --to ~/Projects/copia --name copia   # crea una copia
-$B list                                             # JSON per il pannello
+$B list                                              # projects and backups (JSON)
+$B backup myproject                                  # full backup
+$B backup myproject --db-only --label "before the migration"
+$B inspect ~/Backups/ddev/myproject/myproject-20261015-102100.zip
+$B restore <file.zip> --force                        # overwrite the project
+$B restore <file.zip> --to ~/Projects/copy --name copy     # create a copy
+$B delete <file.zip>
 ```
 
-## Cosa contiene lo zip
+A database-only backup is restored onto the existing project with the same name (or `--name`) and leaves the files alone.
+
+## What a backup contains
 
 ```
-manifest.json          progetto, versione DDEV, tipo DB, commit git, sha256 dei dump
-database/<db>.sql.gz   un dump per ogni database (db, più eventuali database extra)
-files/                 l'intera cartella del progetto
+manifest.json          project, backup type, note, DDEV version, databases, git, sha256 of the dumps
+database/<db>.sql.gz   one dump per database
+files/                 the whole project folder (full backups only)
 ```
 
-Esclusi: i file che DDEV rigenera (`.ddev/.ddev-docker-compose-*`,
-`.ddev/db_snapshots`, `.ddev/traefik/certs`, …) e `node_modules`.
-Pattern aggiuntivi per singolo progetto: un file `.ddev-backup-ignore` nella
-root del progetto, un pattern per riga.
+Files are named `<project>-YYYYMMDD-HHMMSS[-db][-pre-restore][-note].zip` and live in `<backup folder>/<project>/`. They are plain `.zip` files that any archive tool can open.
 
-## Come funziona il restore
+Left out of backups: files DDEV regenerates by itself (`.ddev/.ddev-docker-compose-*`, `.ddev/db_snapshots`, `.ddev/traefik/certs`, …) and the patterns set in **Exclude** (`node_modules` by default). To leave out more for a single project, create a `.ddev-backup-ignore` file in its folder with one pattern per line.
 
-1. Estrae lo zip in una cartella temporanea e verifica gli sha256 dei dump.
-2. Se il progetto esiste già: **backup di sicurezza** (`…-pre-restore.zip`),
-   poi `ddev delete` (container e database, non i file).
-3. Sostituisce la cartella, `ddev start`, `ddev import-db` per ogni database.
-4. Se qualcosa fallisce rimette la cartella originale e stampa il comando per
-   recuperare il database dal backup di sicurezza.
+## How restore works
 
-Il restore è esatto: i file e i database creati dopo il backup spariscono
-(restano nel backup di sicurezza). Le cartelle escluse, come `node_modules`,
-vanno rigenerate (es. `ddev npm install`).
+1. Checks free space, extracts the zip to a temporary folder next to the destination and verifies the sha256 of the dumps.
+2. If the project already exists: safety backup (`…-pre-restore.zip`), then `ddev delete` (containers and databases, not files).
+3. Swaps the folder, runs `ddev start` and `ddev import-db` for each database.
+4. If anything fails, it puts the original folder back and prints the command to recover the database from the safety backup.
 
-## Sicurezza delle operazioni
+With PostgreSQL, open connections to the databases being replaced (application, workers, clients) are closed, since Postgres would otherwise refuse to drop them. Folders left out of the backup, such as `node_modules`, need to be rebuilt after a restore (for example `ddev npm install`).
 
-- **Una operazione alla volta per progetto**: backup, restore e delete dello
-  stesso progetto non possono sovrapporsi, anche se lanciati da pannello e
-  terminale insieme. Il lock sta in `$XDG_RUNTIME_DIR/ddev-backup/`; un lock
-  rimasto da un processo terminato male viene ignorato.
-- **Spazio su disco**: prima di iniziare controlla che ci sia spazio per il
-  backup (file + database non compressi, più 100 MB di margine) o per
-  l'estrazione dello zip in caso di restore, e si ferma con un messaggio
-  invece di riempire il disco a metà operazione.
+## Configuration
 
-## Test
+From the ⚙ gear in the panel. Values are stored in the widget's entry in `~/.config/omarchy/shell.json`, where the terminal script reads them too:
 
-```sh
+| Key         | Default          | Description |
+|-------------|------------------|-------------|
+| `backupDir` | `~/Backups/ddev` | Backup folder (one subfolder per project) |
+| `keep`      | `10`             | Full backups kept per project (0 = all) |
+| `keepDb`    | `20`             | Database-only backups kept per project (0 = all) |
+| `exclude`   | `node_modules`   | Patterns left out of backups, comma-separated |
+| `notify`    | `true`           | Notification when a backup or restore finishes |
+
+Example:
+
+```json
+{ "id": "mcp64.ddev-backup", "backupDir": "/mnt/nas/ddev", "keep": 5, "exclude": "node_modules, vendor" }
+```
+
+or from a terminal: `omarchy bar set mcp64.ddev-backup keep 5 --json`.
+
+Safety backups taken before a restore don't count towards the limits and are never deleted automatically.
+
+## Removal
+
+```bash
+omarchy plugin remove mcp64.ddev-backup
+```
+
+Backups in the backup folder (`~/Backups/ddev` by default) are not deleted.
+
+## Limitations and caveats
+
+- **Backups are not encrypted** and contain `.env`, keys and database data. Keep them somewhere safe, especially if the backup folder is on a shared drive.
+- Restore is exact: anything created after the backup disappears from the project (it stays in the safety backup).
+- The space check covers the backup folder and the project folder, not the Docker storage used while importing databases.
+- With PostgreSQL, a restore cuts the application's connections to the database: running workers and processes will have to reconnect.
+- Project names may only contain letters, digits and hyphens, as DDEV requires.
+
+## Development and tests
+
+```bash
 test/run-tests.sh
 ```
 
-Test end-to-end (circa 8 minuti): crea progetti DDEV usa-e-getta sotto
-`~/.cache` (uno MariaDB e uno PostgreSQL), prova backup completi e del solo
-database, restore, copia, rollback, checksum, lock, spazio insufficiente,
-impostazioni, conservazione e cancellazione, poi rimuove tutto. Richiede
-Docker e DDEV attivi; usa `shellcheck` se installato.
+End-to-end tests (about 8 minutes): they create throwaway DDEV projects under `~/.cache` (one MariaDB, one PostgreSQL), exercise full and database-only backups, restore, copy, rollback, checksums, locking, insufficient space, settings, retention and deletion, then remove everything. Docker and DDEV must be running; `shellcheck` is used if installed.
 
-## Configurazione
+## License
 
-Dal pannello (⚙). I valori vengono salvati da Omarchy nella voce del widget in
-`~/.config/omarchy/shell.json`, dove li legge anche lo script da terminale:
-
-| Chiave      | Default          | Significato                                          |
-|-------------|------------------|------------------------------------------------------|
-| `backupDir` | `~/Backups/ddev` | Cartella dei backup (una sottocartella per progetto)|
-| `keep`      | `10`             | Backup completi conservati per progetto (0 = tutti)  |
-| `keepDb`    | `20`             | Backup del solo database conservati (0 = tutti)      |
-| `exclude`   | `node_modules`   | Pattern esclusi dai backup, separati da virgola      |
-| `notify`    | `true`           | Notifiche a fine backup e restore                    |
-
-Si possono impostare anche da terminale, es.
-`omarchy bar set mcp64.ddev-backup keep 5 --json`.
-
-I backup di sicurezza fatti prima di un restore (`…-pre-restore.zip`) non
-contano nei limiti e non vengono mai cancellati automaticamente.
+MIT. See [LICENSE](LICENSE).

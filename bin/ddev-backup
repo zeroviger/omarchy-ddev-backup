@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
@@ -189,7 +189,8 @@ human_size() {
 LOCK_DIR=""
 
 lock_path() {
-  echo "${XDG_RUNTIME_DIR:-/tmp}/ddev-backup/$1.lock"
+  # Mai in /tmp: una cartella condivisa tra utenti.
+  echo "${XDG_RUNTIME_DIR:-$HOME/.cache}/ddev-backup/$1.lock"
 }
 
 lock_holder_alive() {

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "mcp64.ddev-backup",
   "name": "DDEV Backup",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "author": "Giuseppe Solla (MCP64)",
   "license": "MIT",
   "description": "Backup e restore completi dei progetti DDEV (sorgenti, configurazione e database) in un file .zip",
