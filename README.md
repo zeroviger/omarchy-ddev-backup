@@ -20,7 +20,7 @@ Clicca l'icona  nella barra:
 ## Uso da terminale
 
 ```sh
-B=~/.config/omarchy/plugins/solla.ddev-backup/bin/ddev-backup
+B=~/.config/omarchy/plugins/mcp64.ddev-backup/bin/ddev-backup
 $B backup mioprogetto
 $B inspect ~/Backups/ddev/mioprogetto/mioprogetto-20261015-102100.zip
 $B restore <file.zip> --force                       # sovrascrive il progetto

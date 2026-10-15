@@ -7,12 +7,12 @@ import qs.Ui
 
 // Icona nella barra + popup. Estende Panel di Omarchy, che gestisce lo stato
 // aperto/chiuso (PanelController) e l'IPC:
-//   qs -p /usr/share/omarchy/shell ipc call solla.ddev-backup toggle
+//   qs -p /usr/share/omarchy/shell ipc call mcp64.ddev-backup toggle
 Panel {
   id: root
 
-  moduleName: "solla.ddev-backup"
-  ipcTarget: "solla.ddev-backup"
+  moduleName: "mcp64.ddev-backup"
+  ipcTarget: "mcp64.ddev-backup"
 
   // Panel è un Item senza dimensioni proprie: senza queste la barra gli dà
   // larghezza zero e l'icona non è cliccabile.
