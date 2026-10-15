@@ -5,13 +5,22 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-Item {
+// Icona nella barra + popup. Estende Panel di Omarchy, che gestisce lo stato
+// aperto/chiuso (PanelController) e l'IPC:
+//   qs -p /usr/share/omarchy/shell ipc call solla.ddev-backup toggle
+Panel {
   id: root
 
-  property var anchorItem: null
-  property var host: null
-  property var bar: null
-  property bool opened: false
+  moduleName: "solla.ddev-backup"
+  ipcTarget: "solla.ddev-backup"
+
+  // Panel è un Item senza dimensioni proprie: senza queste la barra gli dà
+  // larghezza zero e l'icona non è cliccabile.
+  readonly property int barSlot: Style.bar.iconFont + Style.space(10)
+  readonly property real openPanelIndicatorWidth: Style.bar.iconFont
+  readonly property real openPanelIndicatorHeight: Style.bar.iconFont
+  implicitWidth: bar && bar.vertical ? bar.barSize : barSlot
+  implicitHeight: bar && bar.vertical ? barSlot : (bar ? bar.barSize : Style.bar.sizeHorizontal)
 
   readonly property string cli: Qt.resolvedUrl("bin/ddev-backup").toString().replace(/^file:\/\//, "")
 
@@ -46,19 +55,9 @@ Item {
     return n
   }
 
-  function open() {
-    root.opened = true
-    root.reload()
-  }
-
-  function close() {
-    root.opened = false
-    root.pendingConfirm = null
-  }
-
-  function toggle() {
-    if (root.opened) root.close()
-    else root.open()
+  onOpenedChanged: {
+    if (opened) root.reload()
+    else root.pendingConfirm = null
   }
 
   function reload() {
@@ -235,10 +234,35 @@ Item {
     }
   }
 
+  BarIconButton {
+    id: button
+    anchors.fill: parent
+    bar: root.bar
+    slotSize: root.barSlot
+    text: ""
+    useActiveColor: false
+    tooltipText: root.busy ? "DDEV Backup — " + root.statusText : "DDEV Backup"
+    onPressed: root.toggle()
+
+    Rectangle {
+      visible: root.busy
+      width: Style.space(7)
+      height: Style.space(7)
+      radius: width / 2
+      color: Color.accent
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.rightMargin: Style.space(2)
+      anchors.topMargin: Style.space(2)
+      border.color: Color.popups.background
+      border.width: 1
+    }
+  }
+
   KeyboardPanel {
     id: popupPanel
-    anchorItem: root.anchorItem
-    owner: root.host || root
+    anchorItem: button
+    owner: root
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
