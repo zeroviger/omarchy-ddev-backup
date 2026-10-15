@@ -17,6 +17,17 @@ BarWidget {
     if ("host" in target) target.host = root
   }
 
+  // KeyboardPanel chiude il popup chiamando owner.close() (owner = questo
+  // widget). Senza questa funzione ripiega su "open = false", che rompe il
+  // binding open: root.opened del pannello e non si riapre più.
+  function open() {
+    if (panelLoader.item && panelLoader.item.open) panelLoader.item.open()
+  }
+
+  function close() {
+    if (panelLoader.item && panelLoader.item.close) panelLoader.item.close()
+  }
+
   function toggle() {
     if (panelLoader.item && panelLoader.item.toggle) panelLoader.item.toggle()
   }
