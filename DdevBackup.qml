@@ -42,6 +42,18 @@ Panel {
   // { kind: "restore"|"delete", path, name, title, message }
   property var pendingConfirm: null
 
+  // Form "ripristina come copia", aperto su un backup completo (path dello zip).
+  property string copyFormFor: ""
+  property string copyName: ""
+  property string copyDir: ""
+  property bool copyDirEdited: false
+  property string copyParent: ""
+  property string copyError: ""
+
+  // Lettura del manifest di uno zip scelto dal file chooser (per l'anteprima).
+  property string inspectPath: ""
+  property string inspectBuffer: ""
+
   // Progetto per cui è aperto il form "backup del database" (nota facoltativa).
   property string dbFormFor: ""
   property string dbLabel: ""
@@ -76,6 +88,7 @@ Panel {
     } else {
       root.pendingConfirm = null
       root.dbFormFor = ""
+      root.copyFormFor = ""
       root.showSettings = false
     }
   }
@@ -175,19 +188,102 @@ Panel {
       path: b.path,
       name: name,
       title: (dbOnly ? "Ripristinare il database di " : "Ripristinare ") + name + "?",
-      message: message + (b.label ? "\nNota: " + b.label : "")
+      message: message,
+      details: root.backupDetails(b)
+    }
+  }
+
+  function isRegistered(name) {
+    for (var i = 0; i < root.projects.length; i++) if (root.projects[i].name === name) return true
+    return false
+  }
+
+  // Righe [etichetta, valore] mostrate nel riquadro di conferma del restore.
+  function backupDetails(b) {
+    var rows = []
+    var created = b.created ? new Date(b.created) : new Date(b.mtime * 1000)
+    rows.push(["Data", Qt.formatDateTime(created, "dd/MM/yyyy HH:mm:ss")])
+    rows.push(["Tipo", b.kind === "database" ? "Solo database" : "Completo (file + database)"])
+    if (b.label) rows.push(["Nota", b.label])
+    var dbs = (b.databases || []).join(", ")
+    rows.push(["Database", (b.dbType ? b.dbType + " " + b.dbVersion : "—") + (dbs ? " · " + dbs : "")])
+    if (b.git && b.git.commit) {
+      rows.push(["Git", (b.git.branch || "(detached)") + " @ " + String(b.git.commit).slice(0, 8)
+        + (b.git.dirty ? " · con modifiche non committate" : "")])
+    } else {
+      rows.push(["Git", "nessun repository"])
+    }
+    if (b.kind !== "database" && b.approot) rows.push(["Cartella", b.approot])
+    rows.push(["Origine", (b.host || "?") + (b.ddevVersion ? " · DDEV " + b.ddevVersion : "")])
+    if (b.size !== undefined) rows.push(["Dimensione", root.formatSize(b.size)])
+    return rows
+  }
+
+  // Manifest letto con `ddev-backup inspect` -> stessa forma delle voci di `list`.
+  function backupFromManifest(m, path) {
+    return {
+      path: path,
+      mtime: Date.parse(m.created) / 1000 || 0,
+      kind: m.kind || "full",
+      label: m.label === "pre-restore" ? "" : (m.label || ""),
+      safety: m.safety === true || m.label === "pre-restore",
+      databases: ((m.database && m.database.databases) || []).map(function(d) { return d.name }),
+      created: m.created || "",
+      host: m.host || "",
+      approot: (m.project && m.project.approot) || "",
+      projectType: (m.project && m.project.type) || "",
+      ddevVersion: (m.project && m.project.ddevVersion) || "",
+      dbType: (m.database && m.database.type) || "",
+      dbVersion: (m.database && m.database.version) || "",
+      git: m.git || null
     }
   }
 
   function askRestoreFile(path) {
-    var file = path.split("/").pop()
-    root.pendingConfirm = {
-      kind: "restore",
-      path: path,
-      name: file,
-      title: "Ripristinare " + file + "?",
-      message: "Il progetto verrà ripristinato nella sua cartella originale. Se esiste già, lo stato attuale viene salvato prima."
+    if (inspectProc.running) return
+    root.errorText = ""
+    root.inspectPath = path
+    root.inspectBuffer = ""
+    inspectProc.command = ["/usr/bin/timeout", "30", root.cli, "inspect", path]
+    inspectProc.running = true
+  }
+
+  function openCopyForm(name, b) {
+    if (root.copyFormFor === b.path) { root.copyFormFor = ""; return }
+    var approot = b.approot || ""
+    root.copyParent = approot ? approot.slice(0, approot.lastIndexOf("/")) : ""
+    root.copyDirEdited = false
+    root.copyError = ""
+    root.copyName = name + "-copia"
+    root.copyDir = root.copyParent ? root.copyParent + "/" + root.copyName : ""
+    root.dbFormFor = ""
+    root.copyFormFor = b.path
+  }
+
+  function setCopyName(text) {
+    root.copyName = text
+    if (!root.copyDirEdited && root.copyParent) root.copyDir = root.copyParent + "/" + text
+  }
+
+  function createCopy(path) {
+    var name = root.copyName.trim()
+    var dir = root.copyDir.trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name)) {
+      root.copyError = "Nome non valido: solo lettere, cifre e trattini."
+      return
     }
+    if (root.isRegistered(name)) {
+      root.copyError = "Esiste già un progetto DDEV chiamato " + name + "."
+      return
+    }
+    if (dir.indexOf("~/") === 0) dir = Quickshell.env("HOME") + dir.slice(1)
+    if (dir.indexOf("/") !== 0) {
+      root.copyError = "La cartella deve essere un percorso assoluto."
+      return
+    }
+    root.copyFormFor = ""
+    // Niente --force: se la cartella esiste e non è vuota lo script rifiuta.
+    root.run("restore", name, ["restore", path, "--to", dir, "--name", name])
   }
 
   function askDelete(name, b) {
@@ -320,6 +416,34 @@ Panel {
   }
 
   Process {
+    id: inspectProc
+    stdout: SplitParser {
+      onRead: data => {
+        if (root.inspectBuffer.length < 1024 * 1024) root.inspectBuffer += data + "\n"
+      }
+    }
+    stderr: SplitParser {
+      onRead: data => {
+        if (data.indexOf("ERROR: ") === 0) root.errorText = root.clip(data.slice(7))
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        if (root.errorText === "") root.errorText = "Impossibile leggere il backup " + root.inspectPath
+        return
+      }
+      try {
+        var m = JSON.parse(root.inspectBuffer)
+        var name = (m.project && m.project.name) || ""
+        var b = root.backupFromManifest(m, root.inspectPath)
+        root.askRestore(name, b, root.isRegistered(name))
+      } catch (e) {
+        root.errorText = "Manifest non valido in " + root.inspectPath
+      }
+    }
+  }
+
+  Process {
     id: pickProc
     command: ["omarchy", "file", "select", "--title", "Scegli un backup DDEV", "--extensions", "zip"]
     stdout: SplitParser {
@@ -374,6 +498,7 @@ Panel {
         if (root.pendingConfirm) root.pendingConfirm = null
         else if (root.showSettings) root.showSettings = false
         else if (root.dbFormFor !== "") root.dbFormFor = ""
+        else if (root.copyFormFor !== "") root.copyFormFor = ""
         else root.close()
       }
 
@@ -604,6 +729,42 @@ Panel {
                 color: Util.alpha(root.foreground, 0.8)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
+              }
+
+              // Anteprima del backup: dati dal manifest.
+              Column {
+                visible: !!(root.pendingConfirm && root.pendingConfirm.details)
+                width: parent.width
+                spacing: Style.space(2)
+
+                Repeater {
+                  model: root.pendingConfirm && root.pendingConfirm.details ? root.pendingConfirm.details : []
+
+                  delegate: Row {
+                    required property var modelData
+                    width: parent.width
+                    spacing: Style.space(8)
+
+                    Text {
+                      id: detailKey
+                      width: Style.space(80)
+                      text: modelData[0]
+                      color: Util.alpha(root.foreground, 0.55)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Text {
+                      width: parent.width - detailKey.width - Style.space(8)
+                      text: modelData[1]
+                      textFormat: Text.PlainText
+                      wrapMode: Text.WrapAnywhere
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+                }
               }
 
               Row {
@@ -851,70 +1012,159 @@ Panel {
             delegate: Rectangle {
               id: backupRow
               required property var modelData
+              readonly property bool copyOpen: root.copyFormFor === modelData.path
               width: parent.width
-              implicitHeight: backupLayout.implicitHeight + Style.space(6)
+              implicitHeight: backupColumn.implicitHeight + Style.space(6)
               height: implicitHeight
               radius: Style.cornerRadius
-              color: Util.alpha(root.foreground, rowHover.hovered ? 0.06 : 0)
+              color: Util.alpha(root.foreground, rowHover.hovered || copyOpen ? 0.06 : 0)
 
               HoverHandler { id: rowHover }
 
-              RowLayout {
-                id: backupLayout
+              Column {
+                id: backupColumn
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: Style.space(18)
-                spacing: Style.space(8)
+                spacing: Style.space(6)
 
-                Column {
-                  Layout.fillWidth: true
-                  spacing: 0
+                RowLayout {
+                  id: backupLayout
+                  width: parent.width
+                  spacing: Style.space(8)
 
-                  Text {
-                    width: parent.width
-                    text: root.backupTitle(backupRow.modelData)
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    elide: Text.ElideRight
+                  Column {
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    Text {
+                      width: parent.width
+                      text: root.backupTitle(backupRow.modelData)
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      visible: (backupRow.modelData.label || "") !== ""
+                      width: parent.width
+                      text: backupRow.modelData.label || ""
+                      textFormat: Text.PlainText
+                      color: Util.alpha(root.foreground, 0.6)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.italic: true
+                      elide: Text.ElideRight
+                    }
                   }
 
                   Text {
-                    visible: (backupRow.modelData.label || "") !== ""
-                    width: parent.width
-                    text: backupRow.modelData.label || ""
-                    textFormat: Text.PlainText
+                    text: root.formatSize(backupRow.modelData.size)
                     color: Util.alpha(root.foreground, 0.6)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    font.italic: true
-                    elide: Text.ElideRight
+                  }
+
+                  PanelActionButton {
+                    visible: backupRow.modelData.kind !== "database"
+                    iconText: "\uf0c5"
+                    tooltipText: "Ripristina come copia (nuovo progetto)"
+                    foreground: backupRow.copyOpen ? Color.accent : root.foreground
+                    enabled: !root.busy
+                    onClicked: root.openCopyForm(card.modelData.name, backupRow.modelData)
+                  }
+
+                  PanelActionButton {
+                    iconText: ""
+                    tooltipText: "Ripristina questo backup"
+                    foreground: root.foreground
+                    enabled: !root.busy
+                    onClicked: root.askRestore(card.modelData.name, backupRow.modelData, card.registered)
+                  }
+
+                  PanelActionButton {
+                    iconText: ""
+                    tooltipText: "Elimina questo backup"
+                    foreground: root.foreground
+                    hoverColor: Color.urgent
+                    enabled: !root.busy
+                    onClicked: root.askDelete(card.modelData.name, backupRow.modelData)
                   }
                 }
 
-                Text {
-                  text: root.formatSize(backupRow.modelData.size)
-                  color: Util.alpha(root.foreground, 0.6)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
+                // Form "ripristina come copia": nome e cartella del nuovo progetto.
+                Column {
+                  visible: backupRow.copyOpen
+                  width: parent.width - Style.space(8)
+                  spacing: Style.space(6)
 
-                PanelActionButton {
-                  iconText: ""
-                  tooltipText: "Ripristina questo backup"
-                  foreground: root.foreground
-                  enabled: !root.busy
-                  onClicked: root.askRestore(card.modelData.name, backupRow.modelData, card.registered)
-                }
+                  Text {
+                    text: "Nome del nuovo progetto"
+                    color: Util.alpha(root.foreground, 0.75)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
 
-                PanelActionButton {
-                  iconText: ""
-                  tooltipText: "Elimina questo backup"
-                  foreground: root.foreground
-                  hoverColor: Color.urgent
-                  enabled: !root.busy
-                  onClicked: root.askDelete(card.modelData.name, backupRow.modelData)
+                  TextField {
+                    width: parent.width
+                    text: backupRow.copyOpen ? root.copyName : ""
+                    placeholderText: "mioprogetto-copia"
+                    onTextChanged: if (backupRow.copyOpen && text !== root.copyName) root.setCopyName(text)
+                    onAccepted: root.createCopy(backupRow.modelData.path)
+                    onVisibleChanged: if (visible) forceActiveFocus()
+                  }
+
+                  Text {
+                    text: "Cartella"
+                    color: Util.alpha(root.foreground, 0.75)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  TextField {
+                    width: parent.width
+                    text: backupRow.copyOpen ? root.copyDir : ""
+                    placeholderText: "~/Projects/mioprogetto-copia"
+                    onTextChanged: {
+                      if (!backupRow.copyOpen || text === root.copyDir) return
+                      root.copyDir = text
+                      root.copyDirEdited = true
+                    }
+                    onAccepted: root.createCopy(backupRow.modelData.path)
+                  }
+
+                  Text {
+                    visible: root.copyError !== ""
+                    width: parent.width
+                    text: root.copyError
+                    color: Color.urgent
+                    wrapMode: Text.WordWrap
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Row {
+                    spacing: Style.space(8)
+                    layoutDirection: Qt.RightToLeft
+                    width: parent.width
+
+                    Button {
+                      text: "Crea copia"
+                      bordered: true
+                      foreground: Color.accent
+                      enabled: !root.busy
+                      onClicked: root.createCopy(backupRow.modelData.path)
+                    }
+
+                    Button {
+                      text: "Annulla"
+                      bordered: true
+                      foreground: root.foreground
+                      onClicked: root.copyFormFor = ""
+                    }
+                  }
                 }
               }
             }

@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
@@ -259,7 +259,12 @@ cmd_list() {
           size: (.[2] | tonumber), mtime: (.[3] | tonumber | floor),
           kind: ($m.kind // "full"), label: (if $m.label == "pre-restore" then "" else ($m.label // "") end),
           safety: ($m.safety // ($m.label == "pre-restore")),
-          databases: [($m.database.databases // [])[].name]
+          databases: [($m.database.databases // [])[].name],
+          created: ($m.created // ""), host: ($m.host // ""),
+          approot: ($m.project.approot // ""), projectType: ($m.project.type // ""),
+          ddevVersion: ($m.project.ddevVersion // ""),
+          dbType: ($m.database.type // ""), dbVersion: ($m.database.version // ""),
+          git: ($m.git // null)
         }) |
         sort_by(-.mtime)')"
   fi
@@ -601,7 +606,7 @@ cmd_restore() {
   name="$(jq -r .project.name <<<"$manifest")"
   origroot="$(jq -r .project.approot <<<"$manifest")"
   [[ -n $newname ]] && name="$newname"
-  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "nome progetto non valido: $name"
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "nome progetto non valido: $name (solo lettere, cifre e trattini)"
   acquire_lock "$name"
   trap release_lock EXIT
 

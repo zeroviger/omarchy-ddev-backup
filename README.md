@@ -24,7 +24,13 @@ Clicca l'icona  nella barra:
   della migrazione"): veloce, utile prima di operazioni rischiose. Il restore
   riporta indietro i database senza toccare i file.
 - **▸** mostra i backup esistenti; per ognuno ci sono **Ripristina** ed
-  **Elimina**, entrambi con richiesta di conferma.
+  **Elimina**, entrambi con richiesta di conferma. Prima di ripristinare
+  compare un'anteprima del backup: data, tipo, nota, database, branch e
+  commit git (e se c'erano modifiche non committate), cartella originale,
+  macchina e versione di DDEV, dimensione.
+- **⧉ Ripristina come copia** (solo backup completi) crea un nuovo progetto
+  DDEV dal backup, con nome e cartella a scelta: utile per provare qualcosa
+  senza toccare l'originale.
 - **Ripristina da file…** (in alto) apre un file chooser per un `.zip`
   ovunque si trovi (es. copiato da un altro PC).
 - **⚙ Impostazioni** (in alto): cartella dei backup, quanti backup tenere,

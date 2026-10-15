@@ -105,6 +105,10 @@ echo 'segreto.txt' >"$PROJECT/.ddev-backup-ignore"
 echo 'non nel backup' >"$PROJECT/segreto.txt"
 (cd "$PROJECT" && ddev config --project-name="$NAME" --project-type=php --docroot=public --database=mariadb:11.8 >/dev/null 2>&1 &&
   ddev start -y >/dev/null 2>&1) || { echo "ddev start fallito"; exit 1; }
+printf 'node_modules/\n' >"$PROJECT/.gitignore"
+git -C "$PROJECT" init -q -b main && git -C "$PROJECT" add -A &&
+  git -C "$PROJECT" -c user.name=test -c user.email=test@example.com commit -qm iniziale ||
+  { echo "git init fallito"; exit 1; }
 sql "$PROJECT" "CREATE TABLE items(id INT PRIMARY KEY, name VARCHAR(50));
   INSERT INTO items VALUES (1,'alpha'),(2,'beta');
   CREATE DATABASE extra; CREATE TABLE extra.notes(id INT, txt TEXT);
@@ -131,6 +135,8 @@ check "il dump contiene i dati" bash -c "bsdtar -xOf \"\$1\" database/db.sql.gz 
 MANIFEST="$("$CLI" inspect "$ZIP" 2>/dev/null)"
 check_eq "manifest: nome progetto" "$NAME" "$(jq -r .project.name <<<"$MANIFEST")"
 check_eq "manifest: tipo database" "mariadb" "$(jq -r .database.type <<<"$MANIFEST")"
+check_eq "manifest: commit git" "$(git -C "$PROJECT" rev-parse HEAD)" "$(jq -r .git.commit <<<"$MANIFEST")"
+check_eq "manifest: branch git" "main" "$(jq -r .git.branch <<<"$MANIFEST")"
 check "manifest: sha256 corretti" bash -c '
   zip="$1"; m="$2"
   for db in $(jq -r ".database.databases[].name" <<<"$m"); do
@@ -205,6 +211,8 @@ check "creato il backup di sicurezza" bash -c "ls \"\$1\"/*-pre-restore.zip" _ "
 check "nessuna cartella temporanea lasciata" bash -c "! ls -A \"\$1\" | grep -q '^\.ddev-restore-'" _ "$TMP/projects"
 
 section "Restore come copia"
+run restore "$ZIP" --to "$TMP/projects/con.punto" --name con.punto
+check_eq "un nome con caratteri non validi viene rifiutato" 1 "$RC"
 run restore "$ZIP" --to "$TMP/projects/altro"
 check_eq "stesso nome in un'altra cartella viene rifiutato" 1 "$RC"
 run restore "$ZIP" --to "$TMP/projects/$COPY" --name "$COPY"
@@ -332,6 +340,10 @@ check "il file è stato cancellato" test ! -e "$VICTIM"
 section "list"
 LISTING="$("$CLI" list 2>/dev/null)"
 check "produce JSON valido" jq -e . <<<"$LISTING"
+check "riporta i dati per l'anteprima del restore" jq -e --arg n "$NAME" --arg root "$PROJECT" '
+  [.projects[] | select(.name == $n) | .backups[] | select(.kind == "full")][0] |
+  .approot == $root and .dbType == "mariadb" and .dbVersion == "11.8" and (.git.commit | length) == 40
+  and .host != "" and .created != "" and .ddevVersion != ""' <<<"$LISTING"
 check "include il progetto con i suoi backup" jq -e --arg n "$NAME" \
   '.projects[] | select(.name == $n) | .backups | length > 0' <<<"$LISTING"
 
