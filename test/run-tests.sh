@@ -241,16 +241,84 @@ check_eq "un dump alterato viene rifiutato" 1 "$RC"
 check "con checksum errato" grep -q "checksum" <<<"$OUT"
 check "nessun progetto creato" test ! -e "$TMP/projects/nuovo"
 
+# ------------------------------------------------------------------ solo database
+
+section "Backup del solo database"
+run backup "$NAME" --db-only --label "Prima della migrazione: v2!"
+check_eq "backup --db-only termina con successo" 0 "$RC"
+DBZIP="${OUT##*DONE: }"
+check "il nome del file contiene -db e la nota" bash -c '[[ $(basename "$1") == *-db-prima-della-migrazione-v2.zip ]]' _ "$DBZIP"
+DBLIST="$(bsdtar -tf "$DBZIP" 2>/dev/null)"
+check "contiene i dump" grep -qx 'database/extra.sql.gz' <<<"$DBLIST"
+check "non contiene file del progetto" bash -c "! grep -q '^files' <<<\"\$1\"" _ "$DBLIST"
+DBMANIFEST="$("$CLI" inspect "$DBZIP" 2>/dev/null)"
+check_eq "manifest: kind database" "database" "$(jq -r .kind <<<"$DBMANIFEST")"
+check_eq "manifest: nota completa" "Prima della migrazione: v2!" "$(jq -r .label <<<"$DBMANIFEST")"
+check "list riporta tipo e nota" jq -e --arg f "$(basename "$DBZIP")" \
+  '[.projects[].backups[] | select(.file == $f)][0] | .kind == "database" and .label == "Prima della migrazione: v2!"' \
+  <<<"$("$CLI" list 2>/dev/null)"
+
+section "Restore del solo database"
+sql "$PROJECT" "DELETE FROM items; UPDATE extra.notes SET txt='cambiata'; CREATE DATABASE spuria2;"
+echo '<?php echo "lavoro in corso";' >"$PROJECT/public/index.php"
+
+run restore "$DBZIP"
+check_eq "senza --force viene rifiutato" 1 "$RC"
+run restore "$DBZIP" --to "$TMP/projects/altrove" --force
+check_eq "--to viene rifiutato" 1 "$RC"
+run restore "$DBZIP" --name ddbt-$$-inesistente --force
+check_eq "su un progetto inesistente viene rifiutato" 1 "$RC"
+
+run restore "$DBZIP" --force
+check_eq "con --force termina con successo" 0 "$RC"
+check_eq "dati di db ripristinati" "1 2" "$(sql "$PROJECT" 'SELECT id FROM items ORDER BY id' | xargs)"
+check_eq "dati di extra ripristinati" "nota" "$(sql "$PROJECT" 'SELECT txt FROM extra.notes')"
+check "database creato dopo il backup rimosso" bash -c "! (cd \"\$1\" && ddev mysql -N -e 'SHOW DATABASES' 2>/dev/null) | grep -qx spuria2" _ "$PROJECT"
+check "i file non vengono toccati" grep -q "lavoro in corso" "$PROJECT/public/index.php"
+DBSAFETY="$(ls -t "$BACKUPS/$NAME"/*-db-pre-restore.zip 2>/dev/null | head -1)"
+check "creato un backup di sicurezza del solo database" test -f "$DBSAFETY"
+check_eq "il backup di sicurezza è marcato come tale" "database true" \
+  "$("$CLI" inspect "$DBSAFETY" 2>/dev/null | jq -r '"\(.kind) \(.safety)"')"
+check "il backup di sicurezza contiene lo stato prima del restore" bash -c \
+  "bsdtar -xOf \"\$1\" database/extra.sql.gz | gunzip | grep -q cambiata" _ "$DBSAFETY"
+
+# ------------------------------------------------------------------ impostazioni
+
+section "Impostazioni da shell.json"
+SHELLJSON="$TMP/shell.json"
+jq -n --arg dir "$TMP/da-shell-json" '{version: 1, bar: {layout: {right: [
+  "omarchy.clock",
+  {id: "mcp64.ddev-backup", backupDir: $dir, keep: 0, keepDb: 0, exclude: "node_modules, public", notify: false}
+]}}}' >"$SHELLJSON"
+OUT="$(env -u DDEV_BACKUP_CONFIG -u DDEV_BACKUP_NOTIFY OMARCHY_SHELL_CONFIG="$SHELLJSON" "$CLI" backup "$NAME" 2>&1)"
+check_eq "backup con le impostazioni di shell.json" 0 "$?"
+SJZIP="${OUT##*DONE: }"
+check "usa la cartella backupDir di shell.json" bash -c '[[ $1 == "$2"/* ]]' _ "$SJZIP" "$TMP/da-shell-json"
+SJLIST="$(bsdtar -tf "$SJZIP" 2>/dev/null)"
+check "applica le esclusioni separate da virgola" bash -c "! grep -q '^files/public' <<<\"\$1\"" _ "$SJLIST"
+check "include ancora il resto" grep -qx 'files/.env' <<<"$SJLIST"
+check_eq "list usa la stessa cartella" "$TMP/da-shell-json" \
+  "$(env -u DDEV_BACKUP_CONFIG OMARCHY_SHELL_CONFIG="$SHELLJSON" "$CLI" list 2>/dev/null | jq -r .backupDir)"
+echo '{"version": 1, "bar": {"layout": {"right": [{"id": "mcp64.ddev-backup", "backupDir": "relativa"}]}}}' >"$SHELLJSON"
+OUT="$(env -u DDEV_BACKUP_CONFIG OMARCHY_SHELL_CONFIG="$SHELLJSON" "$CLI" list 2>&1)"
+check "rifiuta una backupDir relativa" grep -q "percorso assoluto" <<<"$OUT"
+
 # ------------------------------------------------------------------ altro
 
 section "Conservazione e cancellazione"
-echo "{\"backupDir\": \"$BACKUPS\", \"keep\": 3}" >"$DDEV_BACKUP_CONFIG"
+echo "{\"backupDir\": \"$BACKUPS\", \"keep\": 3, \"keepDb\": 2}" >"$DDEV_BACKUP_CONFIG"
 for _ in 1 2 3 4; do
   sleep 1
   "$CLI" backup "$NAME" >/dev/null 2>&1
 done
-check_eq "restano al massimo 3 backup normali" 3 \
-  "$(find "$BACKUPS/$NAME" -name '*.zip' ! -name '*-pre-restore.zip' | wc -l)"
+for _ in 1 2 3; do
+  sleep 1
+  "$CLI" backup "$NAME" --db-only >/dev/null 2>&1
+done
+check_eq "restano al massimo 3 backup completi (keep)" 3 \
+  "$(find "$BACKUPS/$NAME" -regextype posix-extended -regex ".*/$NAME-[0-9]{8}-[0-9]{6}\.zip" | wc -l)"
+check_eq "restano al massimo 2 backup del database (keepDb)" 2 \
+  "$(find "$BACKUPS/$NAME" -name '*-db*.zip' ! -name '*-pre-restore*' | wc -l)"
 check "i backup pre-restore non vengono cancellati" bash -c "ls \"\$1\"/*-pre-restore.zip" _ "$BACKUPS/$NAME"
 
 cp "$(last_backup "$NAME")" "$TMP/fuori.zip"

@@ -42,6 +42,21 @@ Panel {
   // { kind: "restore"|"delete", path, name, title, message }
   property var pendingConfirm: null
 
+  // Progetto per cui è aperto il form "backup del database" (nota facoltativa).
+  property string dbFormFor: ""
+  property string dbLabel: ""
+
+  // Vista impostazioni: valori in modifica, copiati da `settings` all'apertura
+  // e salvati con `omarchy bar set` nella voce del widget in shell.json (dove
+  // li legge anche bin/ddev-backup). I default coincidono con il manifest.
+  property bool showSettings: false
+  property string draftBackupDir: ""
+  property int draftKeep: 10
+  property int draftKeepDb: 20
+  property string draftExclude: ""
+  property bool draftNotify: true
+  property string settingsError: ""
+
   readonly property int maxListBytes: 5 * 1024 * 1024
   readonly property int maxLineLength: 300
 
@@ -56,8 +71,13 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (opened) root.reload()
-    else root.pendingConfirm = null
+    if (opened) {
+      root.reload()
+    } else {
+      root.pendingConfirm = null
+      root.dbFormFor = ""
+      root.showSettings = false
+    }
   }
 
   function reload() {
@@ -91,7 +111,9 @@ Panel {
   }
 
   function backupTitle(b) {
-    return root.formatDate(b.mtime) + (b.file.indexOf("-pre-restore") !== -1 ? "  · pre-restore" : "")
+    return root.formatDate(b.mtime)
+      + (b.kind === "database" ? "  · solo DB" : "")
+      + (b.safety ? "  · pre-restore" : "")
   }
 
   function toggleExpanded(name) {
@@ -119,16 +141,41 @@ Panel {
     root.run("backup", name, ["backup", name])
   }
 
+  function openDbForm(name) {
+    root.dbFormFor = root.dbFormFor === name ? "" : name
+    root.dbLabel = ""
+  }
+
+  function backupDatabase(name) {
+    var args = ["backup", name, "--db-only"]
+    var label = root.dbLabel.trim()
+    if (label !== "") args = args.concat(["--label", label])
+    root.dbFormFor = ""
+    root.dbLabel = ""
+    root.run("backup", name, args)
+  }
+
   function askRestore(name, b, registered) {
+    var dbOnly = b.kind === "database"
+    var message
+    if (dbOnly) {
+      message = "Verranno ripristinati solo i database (" + (b.databases || []).join(", ") + ") al "
+        + root.formatDate(b.mtime) + ". I file non vengono toccati. "
+        + (registered
+          ? "I database attuali vengono salvati prima in un backup di sicurezza."
+          : "Serve un progetto DDEV esistente con questo nome.")
+    } else {
+      message = "Verranno ripristinati file e database al " + root.formatDate(b.mtime) + ". "
+        + (registered
+          ? "Lo stato attuale viene salvato prima in un backup di sicurezza."
+          : "Il progetto verrà ricreato nella sua cartella originale.")
+    }
     root.pendingConfirm = {
       kind: "restore",
       path: b.path,
       name: name,
-      title: "Ripristinare " + name + "?",
-      message: "Verranno ripristinati file e database al " + root.formatDate(b.mtime) + ". "
-        + (registered
-          ? "Lo stato attuale viene salvato prima in un backup di sicurezza."
-          : "Il progetto verrà ricreato nella sua cartella originale.")
+      title: (dbOnly ? "Ripristinare il database di " : "Ripristinare ") + name + "?",
+      message: message + (b.label ? "\nNota: " + b.label : "")
     }
   }
 
@@ -164,6 +211,40 @@ Panel {
   function pickFile() {
     if (root.busy || pickProc.running) return
     pickProc.running = true
+  }
+
+  function openSettings() {
+    root.draftBackupDir = String(root.setting("backupDir", "~/Backups/ddev"))
+    root.draftKeep = Number(root.setting("keep", 10))
+    root.draftKeepDb = Number(root.setting("keepDb", 20))
+    var exclude = root.setting("exclude", "node_modules")
+    root.draftExclude = Array.isArray(exclude) ? exclude.join(", ") : String(exclude)
+    root.draftNotify = root.setting("notify", true) !== false
+    root.settingsError = ""
+    root.pendingConfirm = null
+    root.dbFormFor = ""
+    root.showSettings = true
+  }
+
+  function saveSettings() {
+    var dir = root.draftBackupDir.trim()
+    if (dir.indexOf("/") !== 0 && dir.indexOf("~/") !== 0) {
+      root.settingsError = "La cartella dei backup deve essere un percorso assoluto (es. ~/Backups/ddev)."
+      return
+    }
+    root.settingsError = ""
+    // Valori passati come argomenti ($1…$5), mai interpolati nello script.
+    var id = "mcp64.ddev-backup"
+    settingsProc.command = ["/usr/bin/bash", "-c",
+      "omarchy bar set " + id + " backupDir \"$1\" >/dev/null"
+      + " && omarchy bar set " + id + " keep \"$2\" --json >/dev/null"
+      + " && omarchy bar set " + id + " keepDb \"$3\" --json >/dev/null"
+      + " && omarchy bar set " + id + " exclude \"$4\" >/dev/null"
+      + " && omarchy bar set " + id + " notify \"$5\" --json >/dev/null",
+      "_", dir, String(root.draftKeep), String(root.draftKeepDb),
+      root.draftExclude.trim(), root.draftNotify ? "true" : "false"]
+    settingsProc.running = false
+    settingsProc.running = true
   }
 
   function openBackupDir() {
@@ -223,6 +304,22 @@ Panel {
   }
 
   Process {
+    id: settingsProc
+    stderr: SplitParser {
+      onRead: data => { if (data.trim() !== "") root.settingsError = root.clip(data) }
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.showSettings = false
+        root.statusText = "Impostazioni salvate"
+        root.reload()
+      } else if (root.settingsError === "") {
+        root.settingsError = "Salvataggio non riuscito (exit " + exitCode + ")"
+      }
+    }
+  }
+
+  Process {
     id: pickProc
     command: ["omarchy", "file", "select", "--title", "Scegli un backup DDEV", "--extensions", "zip"]
     stdout: SplitParser {
@@ -272,7 +369,13 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.pendingConfirm ? root.pendingConfirm = null : root.close()
+      // Esc chiude prima la cosa più interna: conferma, impostazioni, form DB.
+      onCloseRequested: {
+        if (root.pendingConfirm) root.pendingConfirm = null
+        else if (root.showSettings) root.showSettings = false
+        else if (root.dbFormFor !== "") root.dbFormFor = ""
+        else root.close()
+      }
 
       Flickable {
         anchors.fill: parent
@@ -321,10 +424,147 @@ Panel {
                 }
 
                 PanelActionButton {
+                  iconText: "\uf013"
+                  tooltipText: root.showSettings ? "Chiudi le impostazioni" : "Impostazioni"
+                  foreground: root.foreground
+                  onClicked: root.showSettings ? root.showSettings = false : root.openSettings()
+                }
+
+                PanelActionButton {
                   iconText: "↻"
                   tooltipText: "Aggiorna"
                   foreground: root.foreground
                   onClicked: root.reload()
+                }
+              }
+            }
+          }
+
+          // Impostazioni (sostituiscono la lista dei progetti finché aperte).
+          Rectangle {
+            visible: root.showSettings
+            width: parent.width
+            implicitHeight: settingsColumn.implicitHeight + Style.space(20)
+            height: implicitHeight
+            radius: Style.cornerRadius
+            color: Util.alpha(root.foreground, 0.03)
+            border.color: Util.alpha(root.foreground, 0.12)
+            border.width: 1
+
+            Column {
+              id: settingsColumn
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(10)
+              spacing: Style.space(10)
+
+              Text {
+                text: "Impostazioni"
+                font.bold: true
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Column {
+                width: parent.width
+                spacing: Style.space(4)
+
+                Text {
+                  text: "Cartella dei backup"
+                  color: Util.alpha(root.foreground, 0.75)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  width: parent.width
+                  text: root.draftBackupDir
+                  placeholderText: "~/Backups/ddev"
+                  onTextChanged: root.draftBackupDir = text
+                }
+              }
+
+              NumberField {
+                width: parent.width
+                label: "Backup completi da tenere per progetto (0 = tutti)"
+                from: 0
+                to: 100
+                value: root.draftKeep
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.draftKeep = value }
+              }
+
+              NumberField {
+                width: parent.width
+                label: "Backup del solo database da tenere (0 = tutti)"
+                from: 0
+                to: 200
+                value: root.draftKeepDb
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.draftKeepDb = value }
+              }
+
+              Column {
+                width: parent.width
+                spacing: Style.space(4)
+
+                Text {
+                  text: "Escludi dai backup (separati da virgola)"
+                  color: Util.alpha(root.foreground, 0.75)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  width: parent.width
+                  text: root.draftExclude
+                  placeholderText: "node_modules, vendor"
+                  onTextChanged: root.draftExclude = text
+                }
+              }
+
+              Toggle {
+                width: parent.width
+                label: "Notifiche"
+                description: "Avvisa a fine backup e restore"
+                checked: root.draftNotify
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.draftNotify = !root.draftNotify
+              }
+
+              Text {
+                visible: root.settingsError !== ""
+                width: parent.width
+                text: root.settingsError
+                color: Color.urgent
+                wrapMode: Text.WordWrap
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Row {
+                spacing: Style.space(8)
+                layoutDirection: Qt.RightToLeft
+                width: parent.width
+
+                Button {
+                  text: settingsProc.running ? "Salvataggio…" : "Salva"
+                  bordered: true
+                  foreground: Color.accent
+                  enabled: !settingsProc.running
+                  onClicked: root.saveSettings()
+                }
+
+                Button {
+                  text: "Annulla"
+                  bordered: true
+                  foreground: root.foreground
+                  onClicked: root.showSettings = false
                 }
               }
             }
@@ -430,7 +670,7 @@ Panel {
           }
 
           Text {
-            visible: root.loaded && root.projects.length === 0 && root.orphans.length === 0
+            visible: !root.showSettings && root.loaded && root.projects.length === 0 && root.orphans.length === 0
             width: parent.width
             topPadding: Style.space(20)
             bottomPadding: Style.space(20)
@@ -443,12 +683,12 @@ Panel {
           }
 
           Repeater {
-            model: root.projects
+            model: root.showSettings ? [] : root.projects
             delegate: projectCard
           }
 
           PanelSectionHeader {
-            visible: root.orphans.length > 0
+            visible: !root.showSettings && root.orphans.length > 0
             width: parent.width
             text: "Progetti non più registrati — " + root.orphans.length
             foreground: root.foreground
@@ -456,12 +696,12 @@ Panel {
           }
 
           Repeater {
-            model: root.orphans
+            model: root.showSettings ? [] : root.orphans
             delegate: projectCard
           }
 
           Text {
-            visible: root.backupDir !== ""
+            visible: !root.showSettings && root.backupDir !== ""
             width: parent.width
             text: "Backup in " + root.backupDir
             color: Util.alpha(root.foreground, 0.45)
@@ -557,12 +797,46 @@ Panel {
 
           PanelActionButton {
             visible: card.registered
+            iconText: "\uf1c0"
+            tooltipText: "Backup del solo database (con nota facoltativa)"
+            foreground: root.dbFormFor === card.modelData.name ? Color.accent : root.foreground
+            enabled: !root.busy
+            onClicked: root.openDbForm(card.modelData.name)
+          }
+
+          PanelActionButton {
+            visible: card.registered
             iconText: card.isBusy && root.busyKind === "backup" ? "…" : ""
             tooltipText: card.isRunning ? "Crea un backup ora"
               : "Crea un backup ora (il progetto viene avviato e poi fermato)"
             foreground: root.foreground
             enabled: !root.busy
             onClicked: root.backup(card.modelData.name)
+          }
+        }
+
+        // Form "backup del database": nota facoltativa + conferma.
+        Row {
+          visible: root.dbFormFor === card.modelData.name
+          width: parent.width
+          spacing: Style.space(8)
+
+          TextField {
+            width: parent.width - dbSaveButton.width - Style.space(8)
+            text: root.dbLabel
+            placeholderText: "Nota (es. prima della migrazione)"
+            onTextChanged: root.dbLabel = text
+            onAccepted: root.backupDatabase(card.modelData.name)
+            onVisibleChanged: if (visible) forceActiveFocus()
+          }
+
+          Button {
+            id: dbSaveButton
+            text: "Backup DB"
+            bordered: true
+            foreground: Color.accent
+            enabled: !root.busy
+            onClicked: root.backupDatabase(card.modelData.name)
           }
         }
 
@@ -593,13 +867,30 @@ Panel {
                 anchors.leftMargin: Style.space(18)
                 spacing: Style.space(8)
 
-                Text {
+                Column {
                   Layout.fillWidth: true
-                  text: root.backupTitle(backupRow.modelData)
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideRight
+                  spacing: 0
+
+                  Text {
+                    width: parent.width
+                    text: root.backupTitle(backupRow.modelData)
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    visible: (backupRow.modelData.label || "") !== ""
+                    width: parent.width
+                    text: backupRow.modelData.label || ""
+                    textFormat: Text.PlainText
+                    color: Util.alpha(root.foreground, 0.6)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.italic: true
+                    elide: Text.ElideRight
+                  }
                 }
 
                 Text {

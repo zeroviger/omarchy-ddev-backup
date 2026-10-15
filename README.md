@@ -18,12 +18,17 @@ Richiede `ddev`, `jq` e `bsdtar` (presente di default su Arch/Omarchy).
 
 Clicca l'icona  nella barra:
 
-- **💾 Backup** su un progetto crea subito il backup. Se il progetto è fermo
-  viene avviato per esportare il database e poi rifermato.
+- **💾 Backup** su un progetto crea subito il backup completo. Se il progetto
+  è fermo viene avviato per esportare il database e poi rifermato.
+- **🛢 Backup DB** salva solo i database, con una nota facoltativa (es. "prima
+  della migrazione"): veloce, utile prima di operazioni rischiose. Il restore
+  riporta indietro i database senza toccare i file.
 - **▸** mostra i backup esistenti; per ognuno ci sono **Ripristina** ed
   **Elimina**, entrambi con richiesta di conferma.
 - **Ripristina da file…** (in alto) apre un file chooser per un `.zip`
   ovunque si trovi (es. copiato da un altro PC).
+- **⚙ Impostazioni** (in alto): cartella dei backup, quanti backup tenere,
+  esclusioni, notifiche.
 - I backup di progetti non più registrati in DDEV compaiono in fondo e si
   possono ripristinare nella loro cartella originale.
 
@@ -32,6 +37,7 @@ Clicca l'icona  nella barra:
 ```sh
 B=~/.config/omarchy/plugins/mcp64.ddev-backup/bin/ddev-backup
 $B backup mioprogetto
+$B backup mioprogetto --db-only --label "prima della migrazione"
 $B inspect ~/Backups/ddev/mioprogetto/mioprogetto-20261015-102100.zip
 $B restore <file.zip> --force                       # sovrascrive il progetto
 $B restore <file.zip> --to ~/Projects/copia --name copia   # crea una copia
@@ -81,22 +87,26 @@ vanno rigenerate (es. `ddev npm install`).
 test/run-tests.sh
 ```
 
-Test end-to-end (circa 5 minuti): crea progetti DDEV usa-e-getta sotto
-`~/.cache`, prova backup, restore, copia, rollback, checksum, lock, spazio
-insufficiente, conservazione e cancellazione, poi rimuove tutto. Richiede
+Test end-to-end (circa 5-6 minuti): crea progetti DDEV usa-e-getta sotto
+`~/.cache`, prova backup completi e del solo database, restore, copia, rollback, checksum, lock, spazio
+insufficiente, impostazioni, conservazione e cancellazione, poi rimuove tutto. Richiede
 Docker e DDEV attivi; usa `shellcheck` se installato.
 
 ## Configurazione
 
-`~/.config/omarchy/ddev-backup/settings.json` (opzionale):
+Dal pannello (⚙). I valori vengono salvati da Omarchy nella voce del widget in
+`~/.config/omarchy/shell.json`, dove li legge anche lo script da terminale:
 
-```json
-{
-  "backupDir": "~/Backups/ddev",
-  "keep": 10,
-  "exclude": ["node_modules"]
-}
-```
+| Chiave      | Default          | Significato                                          |
+|-------------|------------------|------------------------------------------------------|
+| `backupDir` | `~/Backups/ddev` | Cartella dei backup (una sottocartella per progetto)|
+| `keep`      | `10`             | Backup completi conservati per progetto (0 = tutti)  |
+| `keepDb`    | `20`             | Backup del solo database conservati (0 = tutti)      |
+| `exclude`   | `node_modules`   | Pattern esclusi dai backup, separati da virgola      |
+| `notify`    | `true`           | Notifiche a fine backup e restore                    |
 
-`keep` è il numero di backup conservati per progetto (0 = tutti). I backup
-`pre-restore` non vengono mai cancellati automaticamente.
+Si possono impostare anche da terminale, es.
+`omarchy bar set mcp64.ddev-backup keep 5 --json`.
+
+I backup di sicurezza fatti prima di un restore (`…-pre-restore.zip`) non
+contano nei limiti e non vengono mai cancellati automaticamente.

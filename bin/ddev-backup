@@ -13,11 +13,18 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
-CONFIG_FILE="${DDEV_BACKUP_CONFIG:-$HOME/.config/omarchy/ddev-backup/settings.json}"
+PLUGIN_ID="mcp64.ddev-backup"
+SHELL_CONFIG="${OMARCHY_SHELL_CONFIG:-$HOME/.config/omarchy/shell.json}"
+
+# Valori predefiniti: devono coincidere con barWidget.defaults nel manifest.
+DEFAULT_BACKUP_DIR="$HOME/Backups/ddev"
+DEFAULT_KEEP=10
+DEFAULT_KEEP_DB=20
+DEFAULT_EXCLUDE="node_modules"
 
 # File generati da DDEV ad ogni avvio: rigenerabili, quindi esclusi.
 DEFAULT_EXCLUDES=(
@@ -45,38 +52,68 @@ step() {
   echo "STEP: $*"
 }
 
-notify() {
-  [[ ${DDEV_BACKUP_NOTIFY:-1} == 1 ]] || return 0
-  command -v notify-send >/dev/null 2>&1 || return 0
-  notify-send -a "DDEV Backup" "$@" >/dev/null 2>&1 || true
+# ---------------------------------------------------------------- impostazioni
+
+# Le impostazioni sono quelle che il pannello salva (omarchy bar set) nella
+# voce del widget in shell.json: bar.layout.<sezione>[] con id = PLUGIN_ID.
+# Così pannello e terminale usano sempre gli stessi valori. Per i test si
+# può indicare un file JSON con DDEV_BACKUP_CONFIG.
+SETTINGS=""
+
+load_settings() {
+  [[ -z $SETTINGS ]] || return 0
+  if [[ -n ${DDEV_BACKUP_CONFIG:-} ]]; then
+    SETTINGS="$(jq -c 'if type == "object" then . else {} end' "$DDEV_BACKUP_CONFIG" 2>/dev/null)"
+  else
+    SETTINGS="$(jq -c --arg id "$PLUGIN_ID" '
+      [(.bar.layout // {}) | .[]? | .[]? | select(type == "object" and .id == $id)][0] // {}
+    ' "$SHELL_CONFIG" 2>/dev/null)"
+  fi
+  [[ -n $SETTINGS ]] || SETTINGS='{}'
 }
 
+# setting <chiave> <default> — "false" e 0 sono valori validi, non mancanti.
 setting() {
-  # setting <jq-path> <default>
-  local value=""
-  if [[ -f $CONFIG_FILE ]]; then
-    value="$(jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null || true)"
-  fi
-  echo "${value:-$2}"
+  load_settings
+  local value
+  value="$(jq -r --arg k "$1" 'if .[$k] == null then empty
+    elif (.[$k] | type) == "array" then .[$k] | join(",") else .[$k] | tostring end' <<<"$SETTINGS")"
+  [[ -n $value ]] && echo "$value" || echo "$2"
 }
 
 backup_dir() {
   local dir
-  dir="$(setting .backupDir "$HOME/Backups/ddev")"
+  dir="$(setting backupDir "$DEFAULT_BACKUP_DIR")"
   dir="${dir/#\~/$HOME}"
+  [[ $dir == /* ]] || die "backupDir deve essere un percorso assoluto: $dir"
   echo "${dir%/}"
 }
 
+# keep_count full|database
 keep_count() {
-  setting .keep 10
+  local value
+  if [[ $1 == database ]]; then value="$(setting keepDb "$DEFAULT_KEEP_DB")"
+  else value="$(setting keep "$DEFAULT_KEEP")"; fi
+  [[ $value =~ ^[0-9]+$ ]] && echo "$value" || echo 0
 }
 
+# Pattern da escludere, uno per riga (nelle impostazioni separati da virgola).
 extra_excludes() {
-  if [[ -f $CONFIG_FILE ]]; then
-    jq -r '.exclude // ["node_modules"] | .[]' "$CONFIG_FILE" 2>/dev/null || echo node_modules
-  else
-    echo node_modules
-  fi
+  local pattern
+  tr ',' '\n' <<<"$(setting exclude "$DEFAULT_EXCLUDE")" | while IFS= read -r pattern; do
+    pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+    pattern="${pattern%"${pattern##*[![:space:]]}"}"
+    [[ -n $pattern ]] && echo "$pattern"
+  done
+  return 0
+}
+
+notify() {
+  local enabled="${DDEV_BACKUP_NOTIFY:-}"
+  [[ -n $enabled ]] || { [[ "$(setting notify true)" == false ]] && enabled=0 || enabled=1; }
+  [[ $enabled == 1 ]] || return 0
+  command -v notify-send >/dev/null 2>&1 || return 0
+  notify-send -a "DDEV Backup" "$@" >/dev/null 2>&1 || true
 }
 
 describe() {
@@ -207,14 +244,23 @@ cmd_list() {
   projects="$(ddev list --json-output 2>/dev/null | jq -c '[.raw[]? | select(.name != null and .approot != null and .approot != "") | {name, approot, status, type}]' 2>/dev/null || echo '[]')"
   [[ -n $projects ]] || projects='[]'
 
-  # Tutti i backup presenti, raggruppati per cartella-progetto.
-  local backups='[]'
+  # Tutti i backup presenti, raggruppati per cartella-progetto, con tipo,
+  # nota e flag di sicurezza letti dal manifest di ciascuno.
+  local backups='[]' zip_dir zip_file size mtime
   if [[ -d $dest ]]; then
     backups="$(find "$dest" -mindepth 2 -maxdepth 2 -type f -name '*.zip' -printf '%h\t%f\t%s\t%T@\n' 2>/dev/null |
+      while IFS=$'\t' read -r zip_dir zip_file size mtime; do
+        printf '%s\t%s\t%s\t%s\t%s\n' "$zip_dir" "$zip_file" "$size" "$mtime" "$(zip_manifest "$zip_dir/$zip_file")"
+      done |
       jq -R -s -c --arg dest "$dest" '
         split("\n") | map(select(length > 0) | split("\t")) |
-        map({project: (.[0] | ltrimstr($dest + "/")), path: (.[0] + "/" + .[1]), file: .[1],
-             size: (.[2] | tonumber), mtime: (.[3] | tonumber | floor)}) |
+        map((.[4] | fromjson? // {}) as $m | {
+          project: (.[0] | ltrimstr($dest + "/")), path: (.[0] + "/" + .[1]), file: .[1],
+          size: (.[2] | tonumber), mtime: (.[3] | tonumber | floor),
+          kind: ($m.kind // "full"), label: (if $m.label == "pre-restore" then "" else ($m.label // "") end),
+          safety: ($m.safety // ($m.label == "pre-restore")),
+          databases: [($m.database.databases // [])[].name]
+        }) |
         sort_by(-.mtime)')"
   fi
 
@@ -228,16 +274,34 @@ cmd_list() {
 
 # ---------------------------------------------------------------- backup
 
+# Nota scelta dall'utente -> pezzo di nome file: minuscole, [a-z0-9-], max 40.
+slugify() {
+  local slug
+  slug="$(iconv -f utf-8 -t ascii//TRANSLIT <<<"$1" 2>/dev/null || echo "$1")"
+  slug="$(tr '[:upper:]' '[:lower:]' <<<"$slug" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  slug="${slug:0:40}"
+  echo "${slug%-}"
+}
+
 cmd_backup() {
-  local name="" label=""
+  local name="" label="" kind="full" safety=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --label) label="$2"; shift 2 ;;
+      --db-only) kind="database"; shift ;;
+      --label)
+        [[ $# -ge 2 ]] || die "--label richiede un testo"
+        label="$2"; shift 2 ;;
+      # Interno: backup di sicurezza fatto da restore prima di sovrascrivere.
+      --safety) safety=true; shift ;;
       -*) die "opzione sconosciuta: $1" ;;
       *) name="$1"; shift ;;
     esac
   done
-  [[ -n $name ]] || die "uso: ddev-backup backup <progetto>"
+  [[ -n $name ]] || die "uso: ddev-backup backup <progetto> [--db-only] [--label <nota>]"
+  # La nota finisce nel manifest e nel pannello: una riga, niente caratteri
+  # di controllo, lunghezza ragionevole.
+  label="$(tr -d '[:cntrl:]' <<<"$label")"
+  label="${label:0:100}"
   acquire_lock "$name"
   trap release_lock EXIT
 
@@ -258,12 +322,17 @@ cmd_backup() {
   fi
   dbtype="$(jq -r '.dbinfo.database_type // empty' <<<"$info")"
   dbversion="$(jq -r '.dbinfo.database_version // empty' <<<"$info")"
+  [[ $kind == full || -n $dbtype ]] || die "$name non ha un database da salvare"
 
-  local dest stamp out work
+  local dest stamp out work suffix=""
   dest="$(backup_dir)/$name"
   mkdir -p "$dest"
   stamp="$(date +%Y%m%d-%H%M%S)"
-  out="$dest/$name-$stamp${label:+-$label}.zip"
+  [[ $kind == database ]] && suffix+="-db"
+  [[ $safety == true ]] && suffix+="-pre-restore"
+  [[ -n $label ]] && suffix+="-$(slugify "$label")"
+  suffix="${suffix%-}"
+  out="$dest/$name-$stamp$suffix.zip"
   work="$(mktemp -d "$dest/.work-XXXXXX")"
   # shellcheck disable=SC2064
   trap "rm -rf '$work' '$out.part'; [[ $was_stopped == 1 ]] && ddev stop '$name' >/dev/null 2>&1; release_lock" EXIT
@@ -271,11 +340,13 @@ cmd_backup() {
   # Stima per eccesso: file e database non compressi. Il picco reale è
   # dump .gz + zip in costruzione, quasi sempre molto meno.
   step "Controllo dello spazio libero…"
-  local du_excludes=() pattern files_size db_size=0
-  while IFS= read -r pattern; do
-    [[ -n $pattern ]] && du_excludes+=(--exclude="$pattern")
-  done < <(extra_excludes)
-  files_size="$(du -sb "${du_excludes[@]}" "$root" 2>/dev/null | cut -f1)"
+  local du_excludes=() pattern files_size=0 db_size=0
+  if [[ $kind == full ]]; then
+    while IFS= read -r pattern; do
+      [[ -n $pattern ]] && du_excludes+=(--exclude="$pattern")
+    done < <(extra_excludes)
+    files_size="$(du -sb "${du_excludes[@]}" "$root" 2>/dev/null | cut -f1)"
+  fi
   [[ -n $dbtype ]] && db_size="$(databases_size "$root" "$dbtype")"
   require_space "$dest" $((${files_size:-0} + db_size)) "il backup"
 
@@ -309,6 +380,7 @@ cmd_backup() {
 
   jq -n \
     --arg format "$FORMAT" --argjson fv "$FORMAT_VERSION" --arg tool "$VERSION" \
+    --arg kind "$kind" --argjson safety "$safety" \
     --arg name "$name" --arg root "$root" --arg ptype "$ptype" \
     --arg dbtype "$dbtype" --arg dbversion "$dbversion" \
     --arg ddev "$(ddev version -j 2>/dev/null | jq -r '.raw["DDEV version"] // empty')" \
@@ -316,30 +388,37 @@ cmd_backup() {
     --arg commit "$git_commit" --arg branch "$git_branch" --argjson dirty "$git_dirty" \
     --argjson dbs "$dbjson" '{
       format: $format, formatVersion: $fv, toolVersion: $tool,
+      kind: $kind, safety: $safety,
       created: $created, host: $host, label: $label,
       project: {name: $name, approot: $root, type: $ptype, ddevVersion: $ddev},
       database: {type: $dbtype, version: $dbversion, databases: $dbs},
       git: (if $commit == "" then null else {commit: $commit, branch: $branch, dirty: $dirty} end)
     }' >"$work/manifest.json"
 
-  step "Compressione dei file del progetto…"
-  local excludes=() pattern
-  for pattern in "${DEFAULT_EXCLUDES[@]}"; do excludes+=(--exclude "$pattern"); done
-  while IFS= read -r pattern; do
-    [[ -n $pattern ]] && excludes+=(--exclude "$pattern")
-  done < <(extra_excludes)
-  # File opzionale nel progetto con pattern aggiuntivi (uno per riga).
-  if [[ -f $root/.ddev-backup-ignore ]]; then
+  if [[ $kind == full ]]; then
+    step "Compressione dei file del progetto…"
+    local excludes=()
+    for pattern in "${DEFAULT_EXCLUDES[@]}"; do excludes+=(--exclude "$pattern"); done
     while IFS= read -r pattern; do
-      [[ -n $pattern && $pattern != \#* ]] && excludes+=(--exclude "$pattern")
-    done <"$root/.ddev-backup-ignore"
-  fi
+      [[ -n $pattern ]] && excludes+=(--exclude "$pattern")
+    done < <(extra_excludes)
+    # File opzionale nel progetto con pattern aggiuntivi (uno per riga).
+    if [[ -f $root/.ddev-backup-ignore ]]; then
+      while IFS= read -r pattern; do
+        [[ -n $pattern && $pattern != \#* ]] && excludes+=(--exclude "$pattern")
+      done <"$root/.ddev-backup-ignore"
+    fi
 
-  # Prima manifest e database (letti velocemente da inspect/restore), poi i
-  # file del progetto sotto files/. bsdtar conserva i symlink come tali.
-  bsdtar --format zip -cf "$out.part" "${excludes[@]}" -s ',^\./,files/,' -s ',^\.$,files,' \
-    -C "$work" manifest.json database -C "$root" . ||
-    die "creazione dell'archivio fallita"
+    # Prima manifest e database (letti velocemente da inspect/restore), poi i
+    # file del progetto sotto files/. bsdtar conserva i symlink come tali.
+    bsdtar --format zip -cf "$out.part" "${excludes[@]}" -s ',^\./,files/,' -s ',^\.$,files,' \
+      -C "$work" manifest.json database -C "$root" . ||
+      die "creazione dell'archivio fallita"
+  else
+    step "Compressione dei dump…"
+    bsdtar --format zip -cf "$out.part" -C "$work" manifest.json database ||
+      die "creazione dell'archivio fallita"
+  fi
 
   step "Verifica dell'archivio…"
   bsdtar -xOf "$out.part" >/dev/null 2>&1 || die "archivio corrotto, backup annullato"
@@ -347,22 +426,38 @@ cmd_backup() {
 
   prune "$dest"
 
-  local size
+  local size what="Backup"
   size="$(stat -c %s "$out")"
-  notify "Backup completato" "$name → $(basename "$out") ($(human_size "$size"))"
+  [[ $kind == database ]] && what="Backup del database"
+  notify "$what completato" "$name → $(basename "$out") ($(human_size "$size"))"
   echo "DONE: $out"
 }
 
+# Tiene gli ultimi `keep` backup completi e `keepDb` backup del solo
+# database (0 = tutti). I backup di sicurezza fatti prima di un restore non
+# contano nel limite e non vengono mai cancellati automaticamente.
 prune() {
-  local dir="$1" keep
-  keep="$(keep_count)"
-  [[ $keep =~ ^[0-9]+$ && $keep -gt 0 ]] || return 0
-  # I backup di sicurezza "pre-restore" non contano nel limite e non vengono
-  # mai cancellati automaticamente.
-  find "$dir" -maxdepth 1 -type f -name '*.zip' ! -name '*-pre-restore.zip' -printf '%T@\t%p\n' |
-    sort -rn | tail -n +"$((keep + 1))" | cut -f2- | while IFS= read -r old; do
-      rm -f -- "$old"
-    done
+  local dir="$1" keep_full keep_db n_full=0 n_db=0 path kind safety
+  keep_full="$(keep_count full)"
+  keep_db="$(keep_count database)"
+  [[ $keep_full -gt 0 || $keep_db -gt 0 ]] || return 0
+  while IFS=$'\t' read -r _ path; do
+    IFS=$'\t' read -r kind safety < <(zip_manifest "$path" | jq -r '[.kind // "full", (.safety // (.label == "pre-restore"))] | @tsv')
+    [[ $safety == true ]] && continue
+    if [[ $kind == database ]]; then
+      n_db=$((n_db + 1))
+      [[ $keep_db -gt 0 && $n_db -gt $keep_db ]] && rm -f -- "$path"
+    else
+      n_full=$((n_full + 1))
+      [[ $keep_full -gt 0 && $n_full -gt $keep_full ]] && rm -f -- "$path"
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.zip' -printf '%T@\t%p\n' | sort -rn)
+  return 0
+}
+
+# Manifest di uno zip su una riga, o {} se non leggibile.
+zip_manifest() {
+  bsdtar -xOf "$1" manifest.json 2>/dev/null | jq -c . 2>/dev/null || echo '{}'
 }
 
 # ---------------------------------------------------------------- inspect
@@ -406,6 +501,86 @@ restore_cleanup() {
   exit "$rc"
 }
 
+# Restore di un backup del solo database: i file del progetto non vengono
+# toccati; il progetto deve esistere già (stesso nome, o --name). Come il
+# restore completo è esatto: i database creati dopo il backup vengono
+# eliminati (restano nel backup di sicurezza).
+database_cleanup() {
+  local rc=$?
+  if [[ $rc != 0 && -n $D_SAFETY ]]; then
+    echo "ERROR: il database precedente è nel backup di sicurezza; per recuperarlo:" >&2
+    echo "ERROR:   ddev-backup restore '$D_SAFETY' --force --no-safety-backup" >&2
+  fi
+  [[ -n $D_WORK ]] && rm -rf -- "$D_WORK"
+  release_lock
+  exit "$rc"
+}
+
+restore_database() {
+  local zip="$1" manifest="$2" name="$3" force="$4" safety="$5"
+  local info root dbtype wanted
+  info="$(describe "$name" || true)"
+  [[ -n $info && $info != null ]] ||
+    die "il progetto $name non esiste: un backup del solo database si ripristina su un progetto DDEV esistente"
+  [[ $force == 1 ]] || die "i database di $name verranno sovrascritti: usa --force per confermare"
+  root="$(jq -r .approot <<<"$info")"
+
+  if [[ "$(jq -r .status <<<"$info")" != running ]]; then
+    step "Avvio di $name…"
+    ddev start -y "$name" >/dev/null 2>&1 || die "impossibile avviare $name (Docker è attivo?)"
+    info="$(describe "$name")"
+  fi
+  dbtype="$(jq -r '.dbinfo.database_type // empty' <<<"$info")"
+  wanted="$(jq -r '.database.type' <<<"$manifest")"
+  [[ $dbtype == "$wanted" ]] ||
+    die "il backup è di un database $wanted, il progetto $name usa ${dbtype:-nessun database}"
+
+  local dest unpacked
+  dest="$(backup_dir)/$name"
+  mkdir -p "$dest"
+  unpacked="$(unzip -Zt "$zip" 2>/dev/null | sed -n 's/.* \([0-9]\+\) bytes uncompressed.*/\1/p')"
+  require_space "$dest" "${unpacked:-0}" "l'estrazione dei dump"
+  D_WORK="$(mktemp -d "$dest/.work-XXXXXX")" D_SAFETY=""
+  trap database_cleanup EXIT
+
+  step "Estrazione dei dump…"
+  bsdtar -xf "$zip" -C "$D_WORK" manifest.json database || die "estrazione fallita"
+  local db file sha
+  while IFS=$'\t' read -r db file sha; do
+    [[ -n $db ]] || continue
+    [[ "$(sha256sum "$D_WORK/$file" | cut -d' ' -f1)" == "$sha" ]] || die "checksum errato per il database $db"
+  done < <(jq -r '.database.databases[] | [.name, .file, .sha256] | @tsv' <<<"$manifest")
+
+  if [[ $safety == 1 ]]; then
+    step "Backup di sicurezza del database attuale…"
+    D_SAFETY="$(DDEV_BACKUP_NOTIFY=0 "$0" backup "$name" --db-only --safety | sed -n 's/^DONE: //p')" ||
+      die "backup di sicurezza fallito, restore annullato"
+    [[ -f $D_SAFETY ]] || die "backup di sicurezza fallito, restore annullato"
+    step "Backup di sicurezza: $D_SAFETY"
+  fi
+
+  local keep=" "
+  while IFS=$'\t' read -r db file; do
+    [[ -n $db ]] || continue
+    keep+="$db "
+    step "Importazione database $db…"
+    in_project "$root" ddev import-db --database="$db" --file="$D_WORK/$file" --no-progress </dev/null >/dev/null 2>&1 ||
+      die "import del database $db fallito"
+  done < <(jq -r '.database.databases[] | [.name, .file] | @tsv' <<<"$manifest")
+
+  for db in $(list_databases "$root" "$dbtype"); do
+    [[ $keep == *" $db "* ]] && continue
+    step "Eliminazione database $db (creato dopo il backup)…"
+    case "$dbtype" in
+      mysql | mariadb) in_project "$root" ddev mysql -e "DROP DATABASE \`$db\`" </dev/null >/dev/null 2>&1 ;;
+      postgres) in_project "$root" ddev psql -d postgres -c "DROP DATABASE \"$db\"" </dev/null >/dev/null 2>&1 ;;
+    esac || die "impossibile eliminare il database $db"
+  done
+
+  notify "Restore del database completato" "$name: database al $(jq -r .created <<<"$manifest" | cut -c1-16 | tr T ' ')"
+  echo "DONE: $root"
+}
+
 cmd_restore() {
   local zip="" target="" newname="" force=0 safety=1
   while [[ $# -gt 0 ]]; do
@@ -429,6 +604,13 @@ cmd_restore() {
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "nome progetto non valido: $name"
   acquire_lock "$name"
   trap release_lock EXIT
+
+  if [[ "$(jq -r '.kind // "full"' <<<"$manifest")" == database ]]; then
+    [[ -z $target ]] || die "un backup del solo database non ha file: --to non si applica"
+    restore_database "$zip" "$manifest" "$name" "$force" "$safety"
+    return
+  fi
+
   target="${target:-$origroot}"
   target="$(realpath -m "$target")"
 
@@ -475,7 +657,7 @@ cmd_restore() {
   if [[ $in_place == 1 ]]; then
     if [[ -n $existing_root && $safety == 1 ]]; then
       step "Backup di sicurezza dello stato attuale…"
-      R_SAFETY="$(DDEV_BACKUP_NOTIFY=0 "$0" backup "$name" --label pre-restore | sed -n 's/^DONE: //p')" ||
+      R_SAFETY="$(DDEV_BACKUP_NOTIFY=0 "$0" backup "$name" --safety | sed -n 's/^DONE: //p')" ||
         die "backup di sicurezza fallito, restore annullato"
       [[ -f $R_SAFETY ]] || die "backup di sicurezza fallito, restore annullato"
       step "Backup di sicurezza: $R_SAFETY"
@@ -538,18 +720,23 @@ usage() {
 ddev-backup $VERSION — backup e restore di progetti DDEV (file + database) in .zip
 
 Uso:
-  ddev-backup list                         Progetti DDEV e backup esistenti (JSON)
-  ddev-backup backup <progetto>            Crea un backup in \$backupDir/<progetto>/
-  ddev-backup inspect <file.zip>           Mostra il manifest di un backup
-  ddev-backup restore <file.zip> [opzioni] Ripristina file e database
+  ddev-backup list                          Progetti DDEV e backup esistenti (JSON)
+  ddev-backup backup <progetto> [opzioni]   Crea un backup in <backupDir>/<progetto>/
+      --db-only           Solo i database (veloce, es. prima di una migrazione)
+      --label <nota>      Nota libera, salvata nel manifest e nel nome del file
+  ddev-backup inspect <file.zip>            Mostra il manifest di un backup
+  ddev-backup restore <file.zip> [opzioni]  Ripristina file e database
       --to <cartella>     Destinazione (default: cartella originale)
       --name <nome>       Ripristina come nuovo progetto con un altro nome
-      --force             Sovrascrive una cartella esistente (dopo un backup di sicurezza)
+      --force             Sovrascrive progetto/database esistenti (dopo un backup di sicurezza)
       --no-safety-backup  Non fare il backup di sicurezza prima di sovrascrivere
-  ddev-backup delete <file.zip>            Cancella un backup
+  ddev-backup delete <file.zip>             Cancella un backup
 
-Configurazione: $CONFIG_FILE
-  { "backupDir": "~/Backups/ddev", "keep": 10, "exclude": ["node_modules"] }
+Un backup --db-only si ripristina sul progetto esistente con lo stesso nome
+(o --name) e non tocca i file.
+
+Impostazioni: quelle del pannello, salvate in $SHELL_CONFIG
+(voce $PLUGIN_ID): backupDir, keep, keepDb, exclude, notify.
 EOF
 }
 
