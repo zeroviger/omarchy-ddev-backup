@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
@@ -143,6 +143,32 @@ list_databases() {
       ;;
     *)
       die "tipo di database non supportato: $dbtype"
+      ;;
+  esac
+}
+
+# Postgres rifiuta di eliminare (e quindi di reimportare) un database con
+# connessioni aperte: applicazione, worker, un client. Le chiude prima.
+pg_close_connections() {
+  local root="$1" db="$2"
+  in_project "$root" ddev psql -d postgres -At -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+     WHERE datname = '${db//\'/\'\'}' AND pid <> pg_backend_pid()" </dev/null >/dev/null 2>&1 || true
+}
+
+drop_database() {
+  local root="$1" dbtype="$2" db="$3"
+  case "$dbtype" in
+    mysql | mariadb)
+      in_project "$root" ddev mysql -e "DROP DATABASE \`${db//\`/\`\`}\`" </dev/null >/dev/null 2>&1
+      ;;
+    postgres)
+      local quoted="\"${db//\"/\"\"}\""
+      # WITH (FORCE) da Postgres 13; prima si chiudono le connessioni a mano.
+      in_project "$root" ddev psql -d postgres -c "DROP DATABASE $quoted WITH (FORCE)" </dev/null >/dev/null 2>&1 || {
+        pg_close_connections "$root" "$db"
+        in_project "$root" ddev psql -d postgres -c "DROP DATABASE $quoted" </dev/null >/dev/null 2>&1
+      }
       ;;
   esac
 }
@@ -569,6 +595,7 @@ restore_database() {
     [[ -n $db ]] || continue
     keep+="$db "
     step "Importazione database $db…"
+    [[ $dbtype == postgres ]] && pg_close_connections "$root" "$db"
     in_project "$root" ddev import-db --database="$db" --file="$D_WORK/$file" --no-progress </dev/null >/dev/null 2>&1 ||
       die "import del database $db fallito"
   done < <(jq -r '.database.databases[] | [.name, .file] | @tsv' <<<"$manifest")
@@ -576,10 +603,7 @@ restore_database() {
   for db in $(list_databases "$root" "$dbtype"); do
     [[ $keep == *" $db "* ]] && continue
     step "Eliminazione database $db (creato dopo il backup)…"
-    case "$dbtype" in
-      mysql | mariadb) in_project "$root" ddev mysql -e "DROP DATABASE \`$db\`" </dev/null >/dev/null 2>&1 ;;
-      postgres) in_project "$root" ddev psql -d postgres -c "DROP DATABASE \"$db\"" </dev/null >/dev/null 2>&1 ;;
-    esac || die "impossibile eliminare il database $db"
+    drop_database "$root" "$dbtype" "$db" || die "impossibile eliminare il database $db"
   done
 
   notify "Restore del database completato" "$name: database al $(jq -r .created <<<"$manifest" | cut -c1-16 | tr T ' ')"
@@ -689,6 +713,7 @@ cmd_restore() {
   while IFS=$'\t' read -r db file; do
     [[ -n $db ]] || continue
     step "Importazione database $db…"
+    [[ $(jq -r .database.type <<<"$manifest") == postgres ]] && pg_close_connections "$target" "$db"
     in_project "$target" ddev import-db --database="$db" --file="$work/$file" --no-progress </dev/null >/dev/null 2>&1 ||
       die "import del database $db fallito"
   done < <(jq -r '.database.databases[] | [.name, .file] | @tsv' <<<"$manifest")

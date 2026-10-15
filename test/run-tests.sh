@@ -17,6 +17,7 @@ CLI="$HERE/../bin/ddev-backup"
 TMP="$(mktemp -d "$HOME/.cache/ddev-backup-test.XXXXXX")"
 NAME="ddbt-$$"
 COPY="ddbt-$$-copia"
+PG="ddbt-$$-pg"
 PROJECT="$TMP/projects/$NAME"
 BACKUPS="$TMP/backups"
 
@@ -35,6 +36,7 @@ FAILURES=()
 cleanup() {
   ddev delete -Oy "$NAME" >/dev/null 2>&1
   ddev delete -Oy "$COPY" >/dev/null 2>&1
+  ddev delete -Oy "$PG" >/dev/null 2>&1
   rm -rf -- "$TMP"
 }
 trap cleanup EXIT
@@ -65,6 +67,18 @@ check_eq() {
 
 section() {
   printf '\n\033[1m%s\033[0m\n' "$1"
+}
+
+# Una istruzione per chiamata: con -c più istruzioni girano in un'unica
+# transazione, e CREATE/DROP DATABASE lì dentro non sono ammessi.
+psql_in() {
+  local dir="$1" db="$2"
+  shift 2
+  (cd "$dir" && ddev psql -d "$db" -qAt -c "$*" </dev/null 2>/dev/null)
+}
+
+pg_user_dbs() {
+  psql_in "$1" postgres "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres' ORDER BY 1" | xargs
 }
 
 sql() {
@@ -289,6 +303,59 @@ check_eq "il backup di sicurezza è marcato come tale" "database true" \
   "$("$CLI" inspect "$DBSAFETY" 2>/dev/null | jq -r '"\(.kind) \(.safety)"')"
 check "il backup di sicurezza contiene lo stato prima del restore" bash -c \
   "bsdtar -xOf \"\$1\" database/extra.sql.gz | gunzip | grep -q cambiata" _ "$DBSAFETY"
+
+# ------------------------------------------------------------------ postgres
+
+section "PostgreSQL"
+PGDIR="$TMP/projects/$PG"
+mkdir -p "$PGDIR/public"
+echo '<?php echo "pg";' >"$PGDIR/public/index.php"
+if (cd "$PGDIR" && ddev config --project-name="$PG" --project-type=php --docroot=public --database=postgres:16 >/dev/null 2>&1 &&
+  ddev start -y >/dev/null 2>&1); then
+  psql_in "$PGDIR" db "CREATE TABLE items(id INT PRIMARY KEY, name TEXT)"
+  psql_in "$PGDIR" db "INSERT INTO items VALUES (1,'alpha'),(2,'beta')"
+  psql_in "$PGDIR" db "CREATE DATABASE extra"
+  psql_in "$PGDIR" extra "CREATE TABLE notes(id INT, txt TEXT)"
+  psql_in "$PGDIR" extra "INSERT INTO notes VALUES (1,'nota')"
+  check_eq "progetto postgres:16 con i database db ed extra" "db extra" "$(pg_user_dbs "$PGDIR")"
+
+  run backup "$PG"
+  check_eq "backup completo" 0 "$RC"
+  PGZIP="${OUT##*DONE: }"
+  check_eq "manifest: tipo database" "postgres" "$("$CLI" inspect "$PGZIP" 2>/dev/null | jq -r .database.type)"
+  check "il dump di db contiene i dati" bash -c "bsdtar -xOf \"\$1\" database/db.sql.gz | gunzip | grep -q alpha" _ "$PGZIP"
+  check "il dump di extra contiene i dati" bash -c "bsdtar -xOf \"\$1\" database/extra.sql.gz | gunzip | grep -q nota" _ "$PGZIP"
+
+  psql_in "$PGDIR" db "DELETE FROM items WHERE id = 1"
+  psql_in "$PGDIR" extra "UPDATE notes SET txt = 'modificata'"
+  psql_in "$PGDIR" db "CREATE DATABASE spuria"
+  run restore "$PGZIP" --force
+  check_eq "restore completo sul posto" 0 "$RC"
+  check_eq "dati di db ripristinati" "1 2" "$(psql_in "$PGDIR" db 'SELECT id FROM items ORDER BY id' | xargs)"
+  check_eq "dati di extra ripristinati" "nota" "$(psql_in "$PGDIR" extra 'SELECT txt FROM notes')"
+  check_eq "database creato dopo il backup rimosso" "db extra" "$(pg_user_dbs "$PGDIR")"
+
+  run backup "$PG" --db-only --label "pg"
+  check_eq "backup del solo database" 0 "$RC"
+  PGDBZIP="${OUT##*DONE: }"
+
+  # Connessioni aperte (come un'applicazione o un worker) sia sul database
+  # da reimportare sia su uno da eliminare: Postgres le rifiuterebbe.
+  psql_in "$PGDIR" db "DELETE FROM items"
+  psql_in "$PGDIR" db "CREATE DATABASE spuria2"
+  (cd "$PGDIR" && ddev psql -d db -c "SELECT pg_sleep(120)" </dev/null >/dev/null 2>&1) &
+  (cd "$PGDIR" && ddev psql -d spuria2 -c "SELECT pg_sleep(120)" </dev/null >/dev/null 2>&1) &
+  for _ in $(seq 30); do
+    [[ "$(psql_in "$PGDIR" postgres "SELECT count(*) FROM pg_stat_activity WHERE datname IN ('db','spuria2') AND query LIKE '%pg_sleep%'")" -ge 2 ]] && break
+    sleep 0.5
+  done
+  run restore "$PGDBZIP" --force
+  check_eq "restore del solo database con connessioni aperte" 0 "$RC"
+  check_eq "dati ripristinati" "1 2" "$(psql_in "$PGDIR" db 'SELECT id FROM items ORDER BY id' | xargs)"
+  check_eq "database con connessioni aperte eliminato" "db extra" "$(pg_user_dbs "$PGDIR")"
+else
+  fail "ddev start del progetto postgres fallito"
+fi
 
 # ------------------------------------------------------------------ impostazioni
 

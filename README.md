@@ -13,6 +13,8 @@ omarchy plugin add https://github.com/zeroviger/omarchy-ddev-backup --enable
 Aggiornamenti: `omarchy plugin update mcp64.ddev-backup`.
 
 Richiede `ddev`, `jq` e `bsdtar` (presente di default su Arch/Omarchy).
+Database supportati: MariaDB, MySQL e PostgreSQL (tutti i database del
+container, non solo `db`).
 
 ## Uso dal pannello
 
@@ -93,9 +95,10 @@ vanno rigenerate (es. `ddev npm install`).
 test/run-tests.sh
 ```
 
-Test end-to-end (circa 5-6 minuti): crea progetti DDEV usa-e-getta sotto
-`~/.cache`, prova backup completi e del solo database, restore, copia, rollback, checksum, lock, spazio
-insufficiente, impostazioni, conservazione e cancellazione, poi rimuove tutto. Richiede
+Test end-to-end (circa 8 minuti): crea progetti DDEV usa-e-getta sotto
+`~/.cache` (uno MariaDB e uno PostgreSQL), prova backup completi e del solo
+database, restore, copia, rollback, checksum, lock, spazio insufficiente,
+impostazioni, conservazione e cancellazione, poi rimuove tutto. Richiede
 Docker e DDEV attivi; usa `shellcheck` se installato.
 
 ## Configurazione
