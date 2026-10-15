@@ -136,6 +136,10 @@ Panel {
   }
 
   function run(kind, name, args) {
+    root.runCommand(kind, name, ["/usr/bin/timeout", "3600", root.cli].concat(args))
+  }
+
+  function runCommand(kind, name, command) {
     if (root.busy) return
     root.busy = true
     root.busyKind = kind
@@ -144,10 +148,29 @@ Panel {
     root.doneText = ""
     root.statusText = kind === "backup" ? "Backup di " + name + "…"
       : kind === "restore" ? "Ripristino di " + name + "…"
+      : kind === "start" ? "Avvio di " + name + "…"
+      : kind === "stop" ? "Arresto di " + name + "…"
       : "Eliminazione…"
-    opProc.command = ["/usr/bin/timeout", "3600", root.cli].concat(args)
+    opProc.command = command
     opProc.running = false
     opProc.running = true
+  }
+
+  // ddev scrive l'avanzamento su stderr: lo si scarta e in caso di errore si
+  // emette una sola riga ERROR, come fa bin/ddev-backup.
+  function startStop(p) {
+    var action = p.status === "running" ? "stop" : "start"
+    // -y (salta le conferme) esiste solo per start: ddev stop lo rifiuta.
+    var args = action === "start" ? ["start", "-y", p.name] : ["stop", p.name]
+    root.runCommand(action, p.name, ["/usr/bin/timeout", "300", "/usr/bin/bash", "-c",
+      "ddev \"$@\" >/dev/null 2>&1 || { echo \"ERROR: ddev $1 ${@: -1} non riuscito (Docker è attivo?)\" >&2; exit 1; }",
+      "_"].concat(args))
+  }
+
+  function openTerminal(p) {
+    if (!p.approot) return
+    Quickshell.execDetached(["uwsm-app", "--", "xdg-terminal-exec", "--dir=" + p.approot])
+    root.close()
   }
 
   function backup(name) {
@@ -387,6 +410,8 @@ Panel {
       if (exitCode === 0) {
         root.statusText = root.busyKind === "backup" ? "Backup completato: " + root.doneText.split("/").pop()
           : root.busyKind === "restore" ? "Restore completato in " + root.doneText
+          : root.busyKind === "start" ? root.busyName + " avviato"
+          : root.busyKind === "stop" ? root.busyName + " fermato"
           : "Backup eliminato"
       } else {
         root.statusText = ""
@@ -948,12 +973,35 @@ Panel {
             }
           }
 
+          // Nascosto ma presente anche senza backup, così i pulsanti restano in
+          // colonna tra una scheda e l'altra.
           PanelActionButton {
-            visible: card.modelData.backups.length > 0
-            iconText: card.isExpanded ? "▾" : "▸"
+            opacity: card.modelData.backups.length > 0 ? 1 : 0
+            enabled: card.modelData.backups.length > 0
+            iconText: card.isExpanded ? "\uf078" : "\uf054"
             tooltipText: card.isExpanded ? "Nascondi i backup" : "Mostra i backup"
             foreground: root.foreground
             onClicked: root.toggleExpanded(card.modelData.name)
+          }
+
+          PanelActionButton {
+            visible: card.registered
+            iconText: "\uf120"
+            tooltipText: "Apri un terminale nella cartella del progetto"
+            foreground: root.foreground
+            enabled: (card.modelData.approot || "") !== ""
+            onClicked: root.openTerminal(card.modelData)
+          }
+
+          PanelActionButton {
+            visible: card.registered
+            iconText: card.isBusy && (root.busyKind === "start" || root.busyKind === "stop") ? "…"
+              : (card.isRunning ? "\uf04d" : "\uf04b")
+            tooltipText: card.isRunning ? "Ferma il progetto (ddev stop)" : "Avvia il progetto (ddev start)"
+            foreground: root.foreground
+            hoverColor: card.isRunning ? Color.urgent : root.foreground
+            enabled: !root.busy
+            onClicked: root.startStop(card.modelData)
           }
 
           PanelActionButton {

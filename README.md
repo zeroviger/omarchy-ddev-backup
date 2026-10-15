@@ -20,6 +20,9 @@ container, non solo `db`).
 
 Clicca l'icona  nella barra:
 
+- **›** mostra i backup del progetto.
+- **>_** apre un terminale nella cartella del progetto.
+- **▶ / ■** avvia o ferma il progetto (`ddev start` / `ddev stop`).
 - **💾 Backup** su un progetto crea subito il backup completo. Se il progetto
   è fermo viene avviato per esportare il database e poi rifermato.
 - **🛢 Backup DB** salva solo i database, con una nota facoltativa (es. "prima
