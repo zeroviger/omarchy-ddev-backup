@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "solla.ddev-backup",
+  "name": "DDEV Backup",
+  "version": "1.0.0",
+  "author": "Giuseppe Solla",
+  "license": "MIT",
+  "description": "Backup e restore completi dei progetti DDEV (sorgenti, configurazione e database) in un file .zip",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "DDEV Backup",
+    "description": "Backup e restore dei progetti DDEV dalla barra",
+    "category": "Development",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
