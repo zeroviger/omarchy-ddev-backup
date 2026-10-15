@@ -6,6 +6,7 @@
   "author": "Giuseppe Solla",
   "license": "MIT",
   "description": "Backup e restore completi dei progetti DDEV (sorgenti, configurazione e database) in un file .zip",
+  "homepage": "https://github.com/zeroviger/omarchy-ddev-backup",
   "kinds": [
     "bar-widget"
   ],

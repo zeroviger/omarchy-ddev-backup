@@ -4,6 +4,16 @@ Plugin per la barra di Omarchy che fa backup e restore completi dei progetti
 DDEV: **sorgenti, configurazione (`.env`, `.ddev/`) e tutti i database** in un
 singolo file `.zip`.
 
+## Installazione
+
+```sh
+omarchy plugin add https://github.com/zeroviger/omarchy-ddev-backup --enable
+```
+
+Aggiornamenti: `omarchy plugin update mcp64.ddev-backup`.
+
+Richiede `ddev`, `jq` e `bsdtar` (presente di default su Arch/Omarchy).
+
 ## Uso dal pannello
 
 Clicca l'icona  nella barra:
