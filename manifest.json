@@ -3,7 +3,7 @@
   "id": "mcp64.ddev-backup",
   "name": "DDEV Backup",
   "version": "1.0.0",
-  "author": "Giuseppe Solla",
+  "author": "Giuseppe Solla (MCP64)",
   "license": "MIT",
   "description": "Backup e restore completi dei progetti DDEV (sorgenti, configurazione e database) in un file .zip",
   "homepage": "https://github.com/zeroviger/omarchy-ddev-backup",
