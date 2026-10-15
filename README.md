@@ -64,6 +64,28 @@ Il restore è esatto: i file e i database creati dopo il backup spariscono
 (restano nel backup di sicurezza). Le cartelle escluse, come `node_modules`,
 vanno rigenerate (es. `ddev npm install`).
 
+## Sicurezza delle operazioni
+
+- **Una operazione alla volta per progetto**: backup, restore e delete dello
+  stesso progetto non possono sovrapporsi, anche se lanciati da pannello e
+  terminale insieme. Il lock sta in `$XDG_RUNTIME_DIR/ddev-backup/`; un lock
+  rimasto da un processo terminato male viene ignorato.
+- **Spazio su disco**: prima di iniziare controlla che ci sia spazio per il
+  backup (file + database non compressi, più 100 MB di margine) o per
+  l'estrazione dello zip in caso di restore, e si ferma con un messaggio
+  invece di riempire il disco a metà operazione.
+
+## Test
+
+```sh
+test/run-tests.sh
+```
+
+Test end-to-end (circa 5 minuti): crea progetti DDEV usa-e-getta sotto
+`~/.cache`, prova backup, restore, copia, rollback, checksum, lock, spazio
+insufficiente, conservazione e cancellazione, poi rimuove tutto. Richiede
+Docker e DDEV attivi; usa `shellcheck` se installato.
+
 ## Configurazione
 
 `~/.config/omarchy/ddev-backup/settings.json` (opzionale):

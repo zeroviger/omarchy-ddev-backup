@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
@@ -114,6 +114,91 @@ human_size() {
   numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "$1 B"
 }
 
+# ---------------------------------------------------------------- lock
+
+# Una sola operazione alla volta per progetto, da qualunque parte arrivi
+# (pannello, terminale). Lock = cartella con dentro il PID: niente flock,
+# perché ddev start può lasciare processi in background che erediterebbero
+# il file descriptor e terrebbero il lock oltre la fine dello script. Un lock
+# il cui PID non è più un ddev-backup vivo viene considerato abbandonato.
+# Il backup di sicurezza lanciato da restore eredita il lock del padre.
+
+LOCK_DIR=""
+
+lock_path() {
+  echo "${XDG_RUNTIME_DIR:-/tmp}/ddev-backup/$1.lock"
+}
+
+lock_holder_alive() {
+  local pid
+  pid="$(cat "$1/pid" 2>/dev/null)" || return 1
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'ddev-backup'
+}
+
+acquire_lock() {
+  local name="$1" path
+  [[ ${DDEV_BACKUP_LOCKED:-} == "$name" ]] && return 0
+  path="$(lock_path "$name")"
+  mkdir -p "$(dirname "$path")"
+  if ! mkdir "$path" 2>/dev/null; then
+    lock_holder_alive "$path" && die "un'altra operazione è già in corso su $name"
+    rm -rf -- "$path"
+    mkdir "$path" 2>/dev/null || die "un'altra operazione è già in corso su $name"
+  fi
+  echo $$ >"$path/pid"
+  LOCK_DIR="$path"
+  export DDEV_BACKUP_LOCKED="$name"
+}
+
+release_lock() {
+  [[ -n $LOCK_DIR ]] || return 0
+  [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" == "$$" ]] && rm -rf -- "$LOCK_DIR"
+  LOCK_DIR=""
+}
+
+# ---------------------------------------------------------------- spazio
+
+SPACE_MARGIN=$((100 * 1024 * 1024))
+
+available_bytes() {
+  local path="$1"
+  while [[ ! -e $path ]]; do path="$(dirname "$path")"; done
+  # Solo per i test: simula un disco pieno.
+  if [[ -n ${DDEV_BACKUP_TEST_AVAILABLE:-} ]]; then
+    echo "$DDEV_BACKUP_TEST_AVAILABLE"
+    return
+  fi
+  df -B1 --output=avail "$path" | tail -1 | tr -d ' '
+}
+
+# require_space <cartella> <byte necessari> <descrizione>
+require_space() {
+  local avail need
+  avail="$(available_bytes "$1")"
+  need=$(($2 + SPACE_MARGIN))
+  ((avail >= need)) ||
+    die "spazio insufficiente per $3 in $1: servono circa $(human_size "$need"), liberi $(human_size "$avail")"
+}
+
+# Dimensione dei database (dati + indici): stima per eccesso del dump.
+databases_size() {
+  local root="$1" dbtype="$2" size=""
+  case "$dbtype" in
+    mysql | mariadb)
+      size="$(in_project "$root" ddev mysql -N -B -e \
+        "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables
+         WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')" 2>/dev/null)"
+      ;;
+    postgres)
+      size="$(in_project "$root" ddev psql -At -c \
+        "SELECT COALESCE(SUM(pg_database_size(datname)), 0) FROM pg_database
+         WHERE NOT datistemplate AND datname <> 'postgres'" 2>/dev/null)"
+      ;;
+  esac
+  [[ $size =~ ^[0-9]+$ ]] && echo "$size" || echo 0
+}
+
 # ---------------------------------------------------------------- list
 
 cmd_list() {
@@ -153,6 +238,8 @@ cmd_backup() {
     esac
   done
   [[ -n $name ]] || die "uso: ddev-backup backup <progetto>"
+  acquire_lock "$name"
+  trap release_lock EXIT
 
   local info root status dbtype dbversion ptype
   info="$(describe "$name")" || true
@@ -179,7 +266,18 @@ cmd_backup() {
   out="$dest/$name-$stamp${label:+-$label}.zip"
   work="$(mktemp -d "$dest/.work-XXXXXX")"
   # shellcheck disable=SC2064
-  trap "rm -rf '$work' '$out.part'; [[ $was_stopped == 1 ]] && ddev stop '$name' >/dev/null 2>&1 || true" EXIT
+  trap "rm -rf '$work' '$out.part'; [[ $was_stopped == 1 ]] && ddev stop '$name' >/dev/null 2>&1; release_lock" EXIT
+
+  # Stima per eccesso: file e database non compressi. Il picco reale è
+  # dump .gz + zip in costruzione, quasi sempre molto meno.
+  step "Controllo dello spazio libero…"
+  local du_excludes=() pattern files_size db_size=0
+  while IFS= read -r pattern; do
+    [[ -n $pattern ]] && du_excludes+=(--exclude="$pattern")
+  done < <(extra_excludes)
+  files_size="$(du -sb "${du_excludes[@]}" "$root" 2>/dev/null | cut -f1)"
+  [[ -n $dbtype ]] && db_size="$(databases_size "$root" "$dbtype")"
+  require_space "$dest" $((${files_size:-0} + db_size)) "il backup"
 
   mkdir -p "$work/database"
   local dbs=() db
@@ -304,6 +402,7 @@ restore_cleanup() {
     ddev delete --omit-snapshot -y "$R_NAME" >/dev/null 2>&1 || true
   fi
   rm -rf -- "$R_WORK"
+  release_lock
   exit "$rc"
 }
 
@@ -328,6 +427,8 @@ cmd_restore() {
   origroot="$(jq -r .project.approot <<<"$manifest")"
   [[ -n $newname ]] && name="$newname"
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "nome progetto non valido: $name"
+  acquire_lock "$name"
+  trap release_lock EXIT
   target="${target:-$origroot}"
   target="$(realpath -m "$target")"
 
@@ -347,8 +448,13 @@ cmd_restore() {
     in_place=1
   fi
 
-  local parent work
+  local parent work unpacked
   parent="$(dirname "$target")"
+  # L'archivio viene estratto accanto alla destinazione: serve spazio per
+  # tutto il contenuto decompresso. (Il backup di sicurezza fa il suo
+  # controllo, sulla cartella dei backup.)
+  unpacked="$(unzip -Zt "$zip" 2>/dev/null | sed -n 's/.* \([0-9]\+\) bytes uncompressed.*/\1/p')"
+  require_space "$parent" "${unpacked:-0}" "l'estrazione dell'archivio"
   mkdir -p "$parent"
   work="$(mktemp -d "$parent/.ddev-restore-XXXXXX")"
   # Stato letto da restore_cleanup all'uscita (variabili globali, non local,
@@ -420,6 +526,9 @@ cmd_delete() {
   dest="$(realpath "$(backup_dir)")"
   zip="$(realpath "$zip")"
   [[ $zip == "$dest"/*/*.zip ]] || die "posso cancellare solo i backup dentro $dest"
+  # Non cancellare un backup mentre lo stesso progetto viene ripristinato.
+  acquire_lock "$(basename "$(dirname "$zip")")"
+  trap release_lock EXIT
   rm -f -- "$zip"
   echo "DONE: $zip"
 }
