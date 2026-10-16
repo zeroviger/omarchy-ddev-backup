@@ -134,7 +134,7 @@ I backup nella cartella dei backup (di default `~/Backups/ddev`) non vengono can
 
 ## Limiti e avvertenze
 
-- **I backup non sono cifrati** e contengono `.env`, chiavi e dati del database. Tienili in un posto sicuro, soprattutto se la cartella dei backup è su un disco condiviso.
+- **I backup non sono cifrati** e contengono `.env`, chiavi e dati del database. Gli archivi vengono creati leggibili solo da te (`600`) e le cartelle create dal plugin sono private (`700`), ma sui dischi che ignorano i permessi Unix (alcuni NAS o dischi FAT/exFAT) questo non ha effetto: tienili in un posto sicuro.
 - Il restore è esatto: tutto ciò che è stato creato dopo il backup sparisce dal progetto (resta nel backup di sicurezza).
 - Il controllo dello spazio riguarda la cartella dei backup e quella del progetto, non lo spazio di Docker usato durante l'importazione dei database.
 - Con PostgreSQL il restore interrompe le connessioni dell'applicazione al database: worker e processi in esecuzione dovranno riconnettersi.

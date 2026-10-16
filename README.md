@@ -136,7 +136,7 @@ Backups in the backup folder (`~/Backups/ddev` by default) are not deleted.
 
 ## Limitations and caveats
 
-- **Backups are not encrypted** and contain `.env`, keys and database data. Keep them somewhere safe, especially if the backup folder is on a shared drive.
+- **Backups are not encrypted** and contain `.env`, keys and database data. Archives are created readable only by you (`600`) and the folders the plugin creates are private (`700`), but on drives that ignore Unix permissions (some NAS or FAT/exFAT mounts) this has no effect: keep them somewhere safe.
 - Restore is exact: anything created after the backup disappears from the project (it stays in the safety backup).
 - The space check covers the backup folder and the project folder, not the Docker storage used while importing databases.
 - With PostgreSQL, a restore cuts the application's connections to the database: running workers and processes will have to reconnect.

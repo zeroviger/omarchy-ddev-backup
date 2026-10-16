@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
@@ -334,6 +334,11 @@ cmd_backup() {
   # di controllo, lunghezza ragionevole.
   label="$(tr -d '[:cntrl:]' <<<"$label")"
   label="${label:0:100}"
+  # Gli archivi contengono .env, chiavi e dump: leggibili solo dal
+  # proprietario, come le cartelle che vengono create. Vale solo per questo
+  # processo (anche i backup di sicurezza girano in un processo a parte), così
+  # i file ripristinati mantengono i permessi originali.
+  umask 077
   acquire_lock "$name"
   trap release_lock EXIT
 
@@ -359,6 +364,8 @@ cmd_backup() {
   local dest stamp out work suffix=""
   dest="$(backup_dir)/$name"
   mkdir -p "$dest"
+  # Anche una cartella del progetto creata da una versione precedente.
+  chmod 700 "$dest" 2>/dev/null || true
   stamp="$(date +%Y%m%d-%H%M%S)"
   [[ $kind == database ]] && suffix+="-db"
   [[ $safety == true ]] && suffix+="-pre-restore"
@@ -455,6 +462,7 @@ cmd_backup() {
   step "Verifica dell'archivio…"
   bsdtar -xOf "$out.part" >/dev/null 2>&1 || die "archivio corrotto, backup annullato"
   mv "$out.part" "$out"
+  chmod 600 "$out" 2>/dev/null || true
 
   prune "$dest"
 

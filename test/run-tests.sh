@@ -21,6 +21,8 @@ PG="ddbt-$$-pg"
 PROJECT="$TMP/projects/$NAME"
 BACKUPS="$TMP/backups"
 
+# umask comune: i backup devono risultare privati anche così.
+umask 022
 export DDEV_BACKUP_CONFIG="$TMP/settings.json"
 export DDEV_BACKUP_NOTIFY=0
 export XDG_RUNTIME_DIR="$TMP/run"
@@ -136,6 +138,9 @@ run backup "$NAME"
 check_eq "backup termina con successo" 0 "$RC"
 ZIP="$(last_backup "$NAME")"
 check "lo zip esiste in backupDir/<progetto>/" test -f "$ZIP"
+check_eq "lo zip è leggibile solo dal proprietario" 600 "$(stat -c %a "$ZIP")"
+check_eq "la cartella del progetto è privata" 700 "$(stat -c %a "$BACKUPS/$NAME")"
+check_eq "la cartella dei backup creata è privata" 700 "$(stat -c %a "$BACKUPS")"
 LIST="$(bsdtar -tf "$ZIP" 2>/dev/null)"
 check "contiene manifest.json" grep -qx 'manifest.json' <<<"$LIST"
 check "contiene il dump di db" grep -qx 'database/db.sql.gz' <<<"$LIST"
@@ -220,6 +225,8 @@ check_eq "dati di db ripristinati" "1 2" "$(sql "$PROJECT" 'SELECT id FROM items
 check_eq "dati di extra ripristinati" "nota" "$(sql "$PROJECT" 'SELECT txt FROM extra.notes')"
 check "database creato dopo il backup rimosso" bash -c "! (cd \"\$1\" && ddev mysql -N -e 'SHOW DATABASES' 2>/dev/null) | grep -qx spuria" _ "$PROJECT"
 check "file ripristinati" grep -q originale "$PROJECT/public/index.php"
+check_eq "i file ripristinati mantengono i permessi" 644 "$(stat -c %a "$PROJECT/public/index.php")"
+check_eq "il backup di sicurezza è privato" 600 "$(stat -c %a "$(ls "$BACKUPS/$NAME"/*-pre-restore.zip | head -1)")"
 check "file creati dopo il backup rimossi" test ! -e "$PROJECT/public/nuovo.txt"
 check "creato il backup di sicurezza" bash -c "ls \"\$1\"/*-pre-restore.zip" _ "$BACKUPS/$NAME"
 check "nessuna cartella temporanea lasciata" bash -c "! ls -A \"\$1\" | grep -q '^\.ddev-restore-'" _ "$TMP/projects"
