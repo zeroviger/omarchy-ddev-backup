@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 FORMAT="ddev-backup"
 FORMAT_VERSION=1
 
@@ -177,6 +177,10 @@ human_size() {
   numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "$1 B"
 }
 
+# Nomi di database accettati nei backup: diventano nomi di file nello zip e
+# argomenti di ddev import-db.
+DB_NAME_RE='^[A-Za-z0-9_][A-Za-z0-9_$-]{0,63}$'
+
 # ---------------------------------------------------------------- lock
 
 # Una sola operazione alla volta per progetto, da qualunque parte arrivi
@@ -240,6 +244,7 @@ available_bytes() {
 require_space() {
   local avail need
   avail="$(available_bytes "$1")"
+  [[ $avail =~ ^[0-9]+$ ]] || die "impossibile leggere lo spazio libero in $1"
   need=$(($2 + SPACE_MARGIN))
   ((avail >= need)) ||
     die "spazio insufficiente per $3 in $1: servono circa $(human_size "$need"), liberi $(human_size "$avail")"
@@ -395,6 +400,8 @@ cmd_backup() {
     mapfile -t dbs < <(list_databases "$root" "$dbtype")
     for db in "${dbs[@]}"; do
       [[ -n $db ]] || continue
+      [[ $db =~ $DB_NAME_RE ]] ||
+        die "nome di database non supportato: $db (solo lettere, cifre, _, \$ e -)"
       step "Esportazione database $db…"
       ddev export-db "$name" --database="$db" --file="$work/database/$db.sql.gz" </dev/null >/dev/null 2>&1 ||
         die "export del database $db fallito"
@@ -507,9 +514,23 @@ read_manifest() {
   [[ -f $zip ]] || die "file non trovato: $zip"
   manifest="$(bsdtar -xOf "$zip" manifest.json 2>/dev/null)" || die "manifest.json mancante: non è un backup ddev-backup"
   jq -e --arg f "$FORMAT" '.format == $f' <<<"$manifest" >/dev/null 2>&1 || die "formato non riconosciuto"
-  local fv
-  fv="$(jq -r .formatVersion <<<"$manifest")"
-  [[ $fv -le $FORMAT_VERSION ]] || die "backup creato con una versione più recente (formato $fv)"
+  # Il manifest arriva da uno zip qualsiasi: i valori usati come numeri,
+  # percorsi o argomenti vengono controllati qui, in jq, prima di arrivare
+  # alla shell (es. formatVersion in un confronto numerico di bash verrebbe
+  # valutato come espressione, sostituzioni di comando comprese).
+  jq -e --argjson max "$FORMAT_VERSION" '.formatVersion | type == "number" and . == floor and . >= 1 and . <= $max' \
+    <<<"$manifest" >/dev/null 2>&1 ||
+    die "versione del formato non supportata (backup creato con una versione più recente o manifest non valido)"
+  jq -e --arg re "$DB_NAME_RE" '
+    (.kind // "full" | IN("full", "database")) and
+    (.project.name | type == "string") and
+    (.project.approot // "" | type == "string") and
+    (.database.type // "" | IN("", "mysql", "mariadb", "postgres")) and
+    (.database.databases // [] | type == "array" and all(.[];
+      (.name | type == "string" and test($re)) and
+      .file == "database/\(.name).sql.gz" and
+      (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))))
+  ' <<<"$manifest" >/dev/null 2>&1 || die "manifest.json non valido: l'archivio è danneggiato o non è stato creato da ddev-backup"
   echo "$manifest"
 }
 

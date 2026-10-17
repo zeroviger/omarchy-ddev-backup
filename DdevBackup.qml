@@ -547,6 +547,7 @@ Panel {
             fontFamily: root.fontFamily
             iconComponent: Component {
               Text {
+                textFormat: Text.PlainText
                 text: ""
                 color: root.foreground
                 font.family: root.fontFamily
@@ -610,6 +611,7 @@ Panel {
               spacing: Style.space(10)
 
               Text {
+                textFormat: Text.PlainText
                 text: "Impostazioni"
                 font.bold: true
                 color: root.foreground
@@ -622,6 +624,7 @@ Panel {
                 spacing: Style.space(4)
 
                 Text {
+                  textFormat: Text.PlainText
                   text: "Cartella dei backup"
                   color: Util.alpha(root.foreground, 0.75)
                   font.family: root.fontFamily
@@ -663,6 +666,7 @@ Panel {
                 spacing: Style.space(4)
 
                 Text {
+                  textFormat: Text.PlainText
                   text: "Escludi dai backup (separati da virgola)"
                   color: Util.alpha(root.foreground, 0.75)
                   font.family: root.fontFamily
@@ -688,6 +692,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: root.settingsError !== ""
                 width: parent.width
                 text: root.settingsError
@@ -738,6 +743,7 @@ Panel {
               spacing: Style.space(8)
 
               Text {
+                textFormat: Text.PlainText
                 text: root.pendingConfirm ? root.pendingConfirm.title : ""
                 font.bold: true
                 color: root.foreground
@@ -748,6 +754,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: root.pendingConfirm ? root.pendingConfirm.message : ""
                 width: parent.width
                 wrapMode: Text.WordWrap
@@ -771,6 +778,7 @@ Panel {
                     spacing: Style.space(8)
 
                     Text {
+                      textFormat: Text.PlainText
                       id: detailKey
                       width: Style.space(80)
                       text: modelData[0]
@@ -820,6 +828,7 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              textFormat: Text.PlainText
               id: spinner
               visible: root.busy
               text: "↻"
@@ -836,6 +845,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width - (spinner.visible ? spinner.width + Style.space(6) : 0)
               text: root.statusText
               wrapMode: Text.WordWrap
@@ -846,6 +856,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.errorText !== ""
             width: parent.width
             text: root.errorText
@@ -856,6 +867,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: !root.showSettings && root.loaded && root.projects.length === 0 && root.orphans.length === 0
             width: parent.width
             topPadding: Style.space(20)
@@ -887,6 +899,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: !root.showSettings && root.backupDir !== ""
             width: parent.width
             text: "Backup in " + root.backupDir
@@ -951,6 +964,7 @@ Panel {
             spacing: Style.space(2)
 
             Text {
+              textFormat: Text.PlainText
               text: card.modelData.name
               color: root.foreground
               font.family: root.fontFamily
@@ -961,6 +975,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: card.isBusy ? root.statusText
                 : (card.latest
                   ? card.modelData.backups.length + " backup · ultimo " + root.formatDate(card.latest.mtime)
@@ -1087,6 +1102,7 @@ Panel {
                     spacing: 0
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: root.backupTitle(backupRow.modelData)
                       color: root.foreground
@@ -1109,6 +1125,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     text: root.formatSize(backupRow.modelData.size)
                     color: Util.alpha(root.foreground, 0.6)
                     font.family: root.fontFamily
@@ -1149,6 +1166,7 @@ Panel {
                   spacing: Style.space(6)
 
                   Text {
+                    textFormat: Text.PlainText
                     text: "Nome del nuovo progetto"
                     color: Util.alpha(root.foreground, 0.75)
                     font.family: root.fontFamily
@@ -1165,6 +1183,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     text: "Cartella"
                     color: Util.alpha(root.foreground, 0.75)
                     font.family: root.fontFamily
@@ -1184,6 +1203,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     visible: root.copyError !== ""
                     width: parent.width
                     text: root.copyError

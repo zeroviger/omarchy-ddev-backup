@@ -411,6 +411,33 @@ run delete "$VICTIM"
 check_eq "delete di un backup" 0 "$RC"
 check "il file è stato cancellato" test ! -e "$VICTIM"
 
+section "Manifest non fidati"
+# Uno zip qualsiasi può arrivare da "Ripristina da file": i campi del manifest
+# non devono mai essere eseguiti né usati come percorsi.
+EVIL="$TMP/evil"
+evil_zip() {
+  rm -rf "$EVIL" && mkdir -p "$EVIL" && printf '%s' "$2" >"$EVIL/manifest.json" &&
+    bsdtar --format zip -cf "$TMP/$1.zip" -C "$EVIL" manifest.json
+}
+SHA0="$(printf '%064d' 0)"
+evil_zip fv '{"format":"ddev-backup","formatVersion":"FORMAT_VERSION[$(touch '"$TMP"'/pwned)]","kind":"full","project":{"name":"x"},"database":{"type":"","databases":[]}}'
+run inspect "$TMP/fv.zip"
+check_eq "inspect rifiuta formatVersion non numerico" 1 "$RC"
+run restore "$TMP/fv.zip" --to "$TMP/projects/evil" --name evil --force
+check_eq "restore rifiuta formatVersion non numerico" 1 "$RC"
+check "nessun comando eseguito dal manifest" test ! -e "$TMP/pwned"
+evil_zip future '{"format":"ddev-backup","formatVersion":2,"kind":"full","project":{"name":"x"},"database":{"type":"","databases":[]}}'
+run inspect "$TMP/future.zip"
+check_eq "rifiuta un formato più recente" 1 "$RC"
+evil_zip path '{"format":"ddev-backup","formatVersion":1,"kind":"full","project":{"name":"x"},"database":{"type":"mariadb","databases":[{"name":"db","file":"../../etc/passwd","sha256":"'"$SHA0"'"}]}}'
+run inspect "$TMP/path.zip"
+check_eq "rifiuta percorsi dei dump fuori da database/" 1 "$RC"
+evil_zip dbname '{"format":"ddev-backup","formatVersion":1,"kind":"full","project":{"name":"x"},"database":{"type":"mariadb","databases":[{"name":"--x;y","file":"database/--x;y.sql.gz","sha256":"'"$SHA0"'"}]}}'
+run inspect "$TMP/dbname.zip"
+check_eq "rifiuta nomi di database non validi" 1 "$RC"
+run inspect "$(last_backup "$NAME")"
+check_eq "un backup vero passa i controlli" 0 "$RC"
+
 section "list"
 LISTING="$("$CLI" list 2>/dev/null)"
 check "produce JSON valido" jq -e . <<<"$LISTING"
